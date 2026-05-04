@@ -3,12 +3,21 @@ export const KNOWN_NAMESPACES = ['ta', 'math', 'request', 'array', 'input', 'col
 
 // This is used to transform ns() calls to ns.any() calls
 // Entries with a __value property also support dual-use as variables (e.g. time, na)
+//
+// Pine v6 type-cast pattern: `<TypeName>(value)` — most commonly `box(na)`,
+// `line(na)` etc. inside UDT initializers — needs the namespace to be listed
+// here so the call gets rewritten to `<TypeName>.any(value)` (each helper's
+// `any` delegates to `new`, producing a typed-na/passthrough value).
 export const NAMESPACES_LIKE = [
     'hline',
     'plot',
     'fill',
     'label',
     'line',
+    'box',
+    'linefill',
+    'polyline',
+    'table',
     'na',
     'alert',
     'time',

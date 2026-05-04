@@ -1842,6 +1842,84 @@ plot(result)
     });
 });
 
+describe('Pine Script Transpilation - Type-as-function (typed-na pattern)', () => {
+    // Pine v6 lets you write `<TypeName>(value)` to wrap/cast a value as that type.
+    // The most common use is `box(na)`, `line(na)` etc. inside UDT initializers
+    // where a typed-na is needed. The transpiler must rewrite this to
+    // `<TypeName>.any(...)` — calling the namespace directly fails because the
+    // namespace object isn't callable. Each namespace's `any()` method delegates
+    // to `new()`.
+
+    it('rewrites box(na) → box.any(...) so the namespace call resolves at runtime', () => {
+        // Regression: `box(na)` previously emitted as a literal `box(...)` call,
+        // which threw "box is not a function" because BoxHelper isn't callable.
+        const code = `
+//@version=6
+indicator("box(na) typed-na", overlay=true)
+b = box(na)
+plot(close)
+        `;
+        const result = transpile(code);
+        const jsCode = result.toString();
+        expect(jsCode).toBeDefined();
+        expect(jsCode).toContain('box.any(');
+        // Must NOT regress to the broken raw-call form (no "box(p" — but allow box.new(, box.any(, etc.)
+        expect(jsCode).not.toMatch(/[^.\w]box\(p\d+/);
+    });
+
+    it('rewrites line(na) → line.any(...) (already-working case kept stable)', () => {
+        const code = `
+//@version=6
+indicator("line(na) typed-na", overlay=true)
+l = line(na)
+plot(close)
+        `;
+        const result = transpile(code);
+        const jsCode = result.toString();
+        expect(jsCode).toContain('line.any(');
+        expect(jsCode).not.toMatch(/[^.\w]line\(p\d+/);
+    });
+
+    it('rewrites linefill(na) → linefill.any(...)', () => {
+        const code = `
+//@version=6
+indicator("linefill(na) typed-na", overlay=true)
+lf = linefill(na)
+plot(close)
+        `;
+        const result = transpile(code);
+        const jsCode = result.toString();
+        expect(jsCode).toContain('linefill.any(');
+        expect(jsCode).not.toMatch(/[^.\w]linefill\(p\d+/);
+    });
+
+    it('rewrites polyline(na) → polyline.any(...)', () => {
+        const code = `
+//@version=6
+indicator("polyline(na) typed-na", overlay=true)
+p = polyline(na)
+plot(close)
+        `;
+        const result = transpile(code);
+        const jsCode = result.toString();
+        expect(jsCode).toContain('polyline.any(');
+        expect(jsCode).not.toMatch(/[^.\w]polyline\(p\d+/);
+    });
+
+    it('rewrites table(na) → table.any(...)', () => {
+        const code = `
+//@version=6
+indicator("table(na) typed-na", overlay=true)
+t = table(na)
+plot(close)
+        `;
+        const result = transpile(code);
+        const jsCode = result.toString();
+        expect(jsCode).toContain('table.any(');
+        expect(jsCode).not.toMatch(/[^.\w]table\(p\d+/);
+    });
+});
+
 describe('Pine Script Transpilation - Real-World Example (MACD)', () => {
     it('should transpile complete MACD indicator', () => {
         const code = `
