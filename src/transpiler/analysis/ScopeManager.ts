@@ -85,6 +85,46 @@ export class ScopeManager {
      */
     private udtInstances: Map<string, string> = new Map();
 
+    /**
+     * Registry of user-defined function names → UDT type they return.
+     * Populated by inspecting each FunctionDeclaration's return paths during
+     * the UDT pre-pass. A function is registered only when ALL return paths
+     * unambiguously produce the SAME UDT type.
+     *
+     * Used by the instance populator so that `bar = makeBar()` registers
+     * `bar` as a UDT instance when `makeBar` is known to return one.
+     */
+    private functionReturnTypes: Map<string, string> = new Map();
+
+    /**
+     * Registry of user-defined function names → tuple of UDT type names they
+     * return. Each slot holds either the UDT type name at that position, or
+     * `undefined` when that position is not (unambiguously) a UDT instance.
+     *
+     * Populated when ALL return paths of a function are ArrayExpressions of
+     * the SAME length and each position resolves to the SAME UDT (or to
+     * something non-UDT, which becomes `undefined`).
+     *
+     * Used by the instance populator so that `[a, b] = makeBars()` registers
+     * `a` and `b` as UDT instances at their respective tuple positions.
+     */
+    private functionReturnTupleTypes: Map<string, (string | undefined)[]> = new Map();
+
+    /**
+     * Registry of user-defined function names → map of {paramName → UDT type}.
+     * Populated from `<funcName>.__pineParamTypes__ = {...}` markers emitted
+     * by pine2js codegen for parameters that carried a Pine type annotation
+     * (e.g. `readField(BAR b)`). Filtered to UDT-known types so non-UDT
+     * annotations like `int` / `float` / `string` never enter the map.
+     *
+     * Consumed by `transformFunctionDeclaration`: when entering a function's
+     * body, each typed param is temporarily registered as a UDT instance
+     * (`markVariableAsUdtInstance`) so the use-site rewrite for `b.field[N]`
+     * fires inside the body. The registration is removed when leaving the
+     * function scope, keeping the global registry clean.
+     */
+    private functionParamUdtTypes: Map<string, Record<string, string>> = new Map();
+
     public get nextParamIdArg(): any {
         return {
             type: 'Identifier',
@@ -195,6 +235,69 @@ export class ScopeManager {
 
     isUdtInstance(varName: string): boolean {
         return this.udtInstances.has(varName);
+    }
+
+    /**
+     * Record a user-defined function as returning a specific UDT type.
+     * Idempotent — re-registering with the same type is a no-op; conflicting
+     * registrations (different type) drop back to "unknown" by removing the
+     * entry, so an ambiguous function never falsely promotes a caller.
+     */
+    setFunctionReturnType(funcName: string, typeName: string): void {
+        const existing = this.functionReturnTypes.get(funcName);
+        if (existing && existing !== typeName) {
+            this.functionReturnTypes.delete(funcName);
+            return;
+        }
+        this.functionReturnTypes.set(funcName, typeName);
+    }
+
+    getFunctionReturnType(funcName: string): string | undefined {
+        return this.functionReturnTypes.get(funcName);
+    }
+
+    /**
+     * Record a user-defined function as returning a tuple whose positions
+     * carry specific UDT types (or `undefined` for non-UDT positions).
+     * Idempotent — re-registering with the same shape is a no-op; conflicting
+     * registrations (different length OR different type at any position) drop
+     * the entry, so an ambiguous function never falsely promotes a caller.
+     */
+    setFunctionReturnTupleType(funcName: string, tupleTypes: (string | undefined)[]): void {
+        const existing = this.functionReturnTupleTypes.get(funcName);
+        if (existing) {
+            if (existing.length !== tupleTypes.length ||
+                existing.some((t, i) => t !== tupleTypes[i])) {
+                this.functionReturnTupleTypes.delete(funcName);
+                return;
+            }
+        }
+        this.functionReturnTupleTypes.set(funcName, tupleTypes);
+    }
+
+    getFunctionReturnTupleType(funcName: string): (string | undefined)[] | undefined {
+        return this.functionReturnTupleTypes.get(funcName);
+    }
+
+    /**
+     * Record a user-defined function's UDT-typed parameters. The argument
+     * is a `paramName → UDT type` map filtered down to UDT-known types only.
+     */
+    setFunctionParamUdtTypes(funcName: string, paramTypes: Record<string, string>): void {
+        this.functionParamUdtTypes.set(funcName, paramTypes);
+    }
+
+    getFunctionParamUdtTypes(funcName: string): Record<string, string> | undefined {
+        return this.functionParamUdtTypes.get(funcName);
+    }
+
+    /**
+     * Remove a previously-registered UDT instance entry. Used to roll back
+     * scope-local registrations (e.g. UDT-typed function parameters) when
+     * leaving the function body, so the global registry stays clean.
+     */
+    unmarkVariableAsUdtInstance(varName: string): void {
+        this.udtInstances.delete(varName);
     }
 
     addContextBoundVar(name: string, isRootParam: boolean = false): void {

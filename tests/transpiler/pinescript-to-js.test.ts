@@ -2151,9 +2151,11 @@ plot(close)
         const result = transpile(code);
         const jsCode = result.toString();
         expect(jsCode).toBeDefined();
-        // Declaration must be renamed
+        // Declaration must be renamed — accepts both the JS-reserved-keyword
+        // rename suffix (`_$N`) and the method-disambiguation prefix (`$M_`).
+        // The bare `function delete(` form must NEVER appear (would break parse).
         expect(jsCode).not.toMatch(/function\s+delete\s*\(/);
-        expect(jsCode).toMatch(/function\s+delete_\$\d+\s*\(/);
+        expect(jsCode).toMatch(/function\s+\$M_delete_\$\d+\s*\(/);
         // Method-style call site (property access) is still valid JS — keep as-is
         // (PineTS lowers `obj.delete()` to `obj?.delete?.()` via optional chaining)
         expect(jsCode).toMatch(/\.delete[?]?\.?\(/);

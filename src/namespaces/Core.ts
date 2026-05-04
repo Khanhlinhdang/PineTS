@@ -191,7 +191,15 @@ export class Core {
         return _options;
     }
     indicator(...args) {
-        const options = parseIndicatorOptions(args);
+        // The transpiler wraps every positional arg with `$.param(...)`, which
+        // promotes booleans / numbers to a `Series` instance (strings and
+        // objects pass through as-is). Multi-signature matching in
+        // `parseArgsForPineParams` then fails the `boolean` / `number` type
+        // checks because a Series is neither — so `overlay=true`,
+        // `precision=N`, etc. silently drop back to defaults. Unwrap any
+        // Series here to expose the underlying scalar.
+        const unwrapped = args.map(a => a instanceof Series ? a.get(0) : a);
+        const options = parseIndicatorOptions(unwrapped);
 
         const defaults = {
             title: '',

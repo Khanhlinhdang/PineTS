@@ -68,6 +68,249 @@ describe('UDT registry pre-pass (preProcessUdtRegistry)', () => {
         expect(sm.getVariableUdtType('copy')).toBe('BAR');
     });
 
+    it('registers UDT instances initialized via a conditional / ternary expression', () => {
+        // Case 3 fix: when both branches of a ternary resolve to the same UDT,
+        // the variable is registered with that UDT type.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            let seed = BAR.new();
+            let bar = (1 > 0) ? BAR.new() : BAR.copy(seed);
+        `);
+        expect(sm.isUdtInstance('bar')).toBe(true);
+        expect(sm.getVariableUdtType('bar')).toBe('BAR');
+    });
+
+    it('handles nested ternaries — recursion through both branches', () => {
+        // c1 ? BAR.new() : (c2 ? BAR.copy(seed) : BAR.new())
+        // The recursive helper walks both branches at every level.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            let seed = BAR.new();
+            let bar = (1 > 0) ? BAR.new() : ((2 > 0) ? BAR.copy(seed) : BAR.new());
+        `);
+        expect(sm.isUdtInstance('bar')).toBe(true);
+        expect(sm.getVariableUdtType('bar')).toBe('BAR');
+    });
+
+    it('does NOT register a ternary whose branches have DIFFERENT UDT types', () => {
+        // Safety check: if the branches resolve to different types, we can't
+        // unambiguously assign one — skip rather than misclassify.
+        const sm = buildUdtRegistry(`
+            const FOO = Type({ a: ['float', 0] });
+            const BAR = Type({ b: ['float', 0] });
+            let either = (1 > 0) ? FOO.new() : BAR.new();
+        `);
+        expect(sm.isUdtInstance('either')).toBe(false);
+    });
+
+    it('does NOT register a ternary whose branches mix UDT and non-UDT', () => {
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ b: ['float', 0] });
+            let arr = array.from(1, 2);
+            let mixed = (1 > 0) ? BAR.new() : arr;
+        `);
+        expect(sm.isUdtInstance('mixed')).toBe(false);
+    });
+
+    it('infers UDT return type of a user function whose body returns `<UDT>.new(...)`', () => {
+        // `function makeBar() { return BAR.new(); }` — the function's return
+        // type is recorded so callers can flow the type through.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            function makeBar() { return BAR.new(); }
+        `);
+        expect(sm.getFunctionReturnType('makeBar')).toBe('BAR');
+    });
+
+    it('registers `bar = userFunc()` as a UDT instance when the function returns one', () => {
+        // The Case 1 fix in action — `bar` initialized via a user-function
+        // call gets registered with the function's inferred return type.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            function makeBar() { return BAR.new(); }
+            let bar = makeBar();
+        `);
+        expect(sm.isUdtInstance('bar')).toBe(true);
+        expect(sm.getVariableUdtType('bar')).toBe('BAR');
+    });
+
+    it('iteratively resolves chained user-function returns (helper → wrapper)', () => {
+        // makeBar() calls makeBarHelper() — the inference loop must run
+        // multiple passes to register both functions, then `bar`.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            function makeBarHelper() { return BAR.new(); }
+            function makeBar() { return makeBarHelper(); }
+            let bar = makeBar();
+        `);
+        expect(sm.getFunctionReturnType('makeBarHelper')).toBe('BAR');
+        expect(sm.getFunctionReturnType('makeBar')).toBe('BAR');
+        expect(sm.isUdtInstance('bar')).toBe(true);
+    });
+
+    it('does NOT register a function whose return paths produce DIFFERENT UDT types', () => {
+        // Safety: if some return paths produce FOO and others BAR, the
+        // function is not unambiguously typed — skip rather than misclassify.
+        const sm = buildUdtRegistry(`
+            const FOO = Type({ a: ['float', 0] });
+            const BAR = Type({ b: ['float', 0] });
+            function ambiguous(c) { if (c) { return FOO.new(); } else { return BAR.new(); } }
+        `);
+        expect(sm.getFunctionReturnType('ambiguous')).toBeUndefined();
+    });
+
+    it('does NOT register a function with a non-UDT return path', () => {
+        // If even one return produces a non-UDT (or unrecognized) value,
+        // the function's return type stays unknown.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ b: ['float', 0] });
+            function maybe(c) { if (c) { return BAR.new(); } else { return 0; } }
+        `);
+        expect(sm.getFunctionReturnType('maybe')).toBeUndefined();
+    });
+
+    it('does NOT descend into nested function bodies when collecting returns', () => {
+        // The outer function's `return` paths must not be polluted by an
+        // inner closure's `return BAR.new()`. Outer returns 1 (a number),
+        // so it shouldn't be registered as a UDT-returning function.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ b: ['float', 0] });
+            function outer() {
+                function inner() { return BAR.new(); }
+                return 1;
+            }
+        `);
+        expect(sm.getFunctionReturnType('outer')).toBeUndefined();
+        expect(sm.getFunctionReturnType('inner')).toBe('BAR');
+    });
+
+    it('infers tuple return type when a function returns `[<UDT>.new(), <UDT>.new()]`', () => {
+        // Case 4 — `makeBars() => [BAR.new(), BAR.new()]` is recorded so that
+        // tuple-destructuring at the call site can register each binding.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            function makeBars() { return [BAR.new(), BAR.new()]; }
+        `);
+        expect(sm.getFunctionReturnTupleType('makeBars')).toEqual(['BAR', 'BAR']);
+        // Scalar-return registry must remain empty for tuple-returning fns.
+        expect(sm.getFunctionReturnType('makeBars')).toBeUndefined();
+    });
+
+    it('infers heterogeneous tuple return types (mixed UDT slots)', () => {
+        // Distinct UDT types per slot should be preserved verbatim.
+        const sm = buildUdtRegistry(`
+            const FOO = Type({ a: ['float', 0] });
+            const BAR = Type({ b: ['float', 0] });
+            function makePair() { return [FOO.new(), BAR.new()]; }
+        `);
+        expect(sm.getFunctionReturnTupleType('makePair')).toEqual(['FOO', 'BAR']);
+    });
+
+    it('registers ArrayPattern destructuring elements as UDT instances per slot', () => {
+        // The Case 4 fix in action — `[a, b] = makeBars()` registers each
+        // element with its tuple slot's UDT type.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            function makeBars() { return [BAR.new(), BAR.new()]; }
+            let [a, b] = makeBars();
+        `);
+        expect(sm.isUdtInstance('a')).toBe(true);
+        expect(sm.isUdtInstance('b')).toBe(true);
+        expect(sm.getVariableUdtType('a')).toBe('BAR');
+        expect(sm.getVariableUdtType('b')).toBe('BAR');
+    });
+
+    it('skips non-UDT slots when destructuring a partially-typed tuple', () => {
+        // If only some slots are UDT instances, only those positions register.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ b: ['float', 0] });
+            function makeMixed() { return [BAR.new(), 0]; }
+            let [u, n] = makeMixed();
+        `);
+        expect(sm.isUdtInstance('u')).toBe(true);
+        expect(sm.getVariableUdtType('u')).toBe('BAR');
+        expect(sm.isUdtInstance('n')).toBe(false);
+    });
+
+    it('does NOT register destructuring when tuple lengths differ across return paths', () => {
+        // Safety: if return paths produce tuples of different lengths the
+        // function's tuple shape is ambiguous → no registration.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ b: ['float', 0] });
+            function inconsistent(c) {
+                if (c) { return [BAR.new(), BAR.new()]; }
+                else   { return [BAR.new()]; }
+            }
+            let [a, b] = inconsistent(true);
+        `);
+        expect(sm.getFunctionReturnTupleType('inconsistent')).toBeUndefined();
+        expect(sm.isUdtInstance('a')).toBe(false);
+        expect(sm.isUdtInstance('b')).toBe(false);
+    });
+
+    it('does NOT register destructuring when a slot type disagrees across return paths', () => {
+        // Safety: slot 0 is FOO in one path and BAR in another → ambiguous.
+        const sm = buildUdtRegistry(`
+            const FOO = Type({ a: ['float', 0] });
+            const BAR = Type({ b: ['float', 0] });
+            function ambig(c) {
+                if (c) { return [FOO.new(), BAR.new()]; }
+                else   { return [BAR.new(), BAR.new()]; }
+            }
+            let [x, y] = ambig(true);
+        `);
+        expect(sm.getFunctionReturnTupleType('ambig')).toBeUndefined();
+        expect(sm.isUdtInstance('x')).toBe(false);
+        expect(sm.isUdtInstance('y')).toBe(false);
+    });
+
+    it('reads `__pineParamTypes__` markers and registers UDT-typed function parameters', () => {
+        // Case 2 — pine2js codegen emits a marker for each function whose
+        // parameters carry a Pine type annotation (e.g. `readField(BAR b)`).
+        // The pre-pass reads it and stores `funcName → { paramName: TypeName }`
+        // for `transformFunctionDeclaration` to consume scope-locally.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            function readField(b) { return b.low_v[1]; }
+            readField.__pineParamTypes__ = { "b": "BAR" };
+        `);
+        expect(sm.getFunctionParamUdtTypes('readField')).toEqual({ b: 'BAR' });
+    });
+
+    it('strips Pine type qualifiers (`series BAR`) when resolving the type name', () => {
+        // Pine annotations can include qualifiers: `series BAR b`, `simple int x`.
+        // The pre-pass keeps only the trailing token and matches it against
+        // the UDT registry.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            function readField(b) { return b.low_v[1]; }
+            readField.__pineParamTypes__ = { "b": "series BAR" };
+        `);
+        expect(sm.getFunctionParamUdtTypes('readField')).toEqual({ b: 'BAR' });
+    });
+
+    it('drops non-UDT parameter type annotations from the marker', () => {
+        // `int`, `float`, `string` etc. are never UDT type names. The marker
+        // emits them too, but the pre-pass filters them out.
+        const sm = buildUdtRegistry(`
+            const BAR = Type({ low_v: ['float', 0] });
+            function mixed(a, b, c) { return 0; }
+            mixed.__pineParamTypes__ = { "a": "int", "b": "BAR", "c": "float" };
+        `);
+        // Only `b: BAR` survives — primitives are filtered.
+        expect(sm.getFunctionParamUdtTypes('mixed')).toEqual({ b: 'BAR' });
+    });
+
+    it('skips marker registration entirely when no params resolve to a UDT', () => {
+        // Avoid polluting the registry with an empty entry for fully-untyped
+        // (or all-primitive) function signatures.
+        const sm = buildUdtRegistry(`
+            function plain(x, y) { return x + y; }
+            plain.__pineParamTypes__ = { "x": "int", "y": "float" };
+        `);
+        expect(sm.getFunctionParamUdtTypes('plain')).toBeUndefined();
+    });
+
     it('does NOT register built-in factory calls as UDT instances', () => {
         // These are critical: built-in factory methods like polyline.new(),
         // array.from(), chart.point.from_index() must NOT enter the UDT
@@ -226,6 +469,62 @@ type BAR
 bar = BAR.new()
 b = bar.low_v[1]
 plot(b, "out")
+            `),
+        ).resolves.toBeDefined();
+    });
+
+    it('Case 1 smoke — `bar = makeBar()` then `bar.field[N]` runs without error', async () => {
+        // Verifies that user-function-return type inference enables the rewrite
+        // for the indirect initialization pattern.
+        await expect(
+            mkPts().run(`
+//@version=5
+indicator("case1smoke")
+type BAR
+    float low_v = low
+makeBar() =>
+    BAR.new()
+bar = makeBar()
+b = bar.low_v[1]
+plot(b, "out")
+            `),
+        ).resolves.toBeDefined();
+    });
+
+    it('Case 2 smoke — `readField(BAR b) => b.field[N]` runs without "b is not defined"', async () => {
+        // Verifies the typed-parameter path: pine2js emits __pineParamTypes__,
+        // AnalysisPass populates the per-function registry, and
+        // transformFunctionDeclaration scope-locally registers `b` as a UDT
+        // instance for the duration of the body. Before the fix, `b.low_v[N]`
+        // inside the body either crashed or silently returned the wrong value.
+        await expect(
+            mkPts().run(`
+//@version=5
+indicator("case2smoke")
+type BAR
+    float low_v = low
+readField(BAR b) =>
+    b.low_v[1]
+bar = BAR.new()
+plot(readField(bar), "out")
+            `),
+        ).resolves.toBeDefined();
+    });
+
+    it('Case 4 smoke — `[a, b] = makeBars()` then `a.field[N]` runs without error', async () => {
+        // Verifies that tuple-return inference + ArrayPattern slot registration
+        // enable the rewrite for the destructuring pattern.
+        await expect(
+            mkPts().run(`
+//@version=5
+indicator("case4smoke")
+type BAR
+    float low_v = low
+makeBars() =>
+    [BAR.new(), BAR.new()]
+[a, b] = makeBars()
+plot(a.low_v[1], "outA")
+plot(b.low_v[2], "outB")
             `),
         ).resolves.toBeDefined();
     });

@@ -496,13 +496,21 @@ export function transformMemberExpression(memberNode: any, originalParamName: st
             scopeManager.isUdtInstance(cursor.object.name)
         ) {
             const baseName = cursor.object.name;
-            // Replace leaf `bar` with `$.get(<scoped-bar>, lookback)` and drop
+            // For UDT-typed function parameters (Case 2), the leaf must stay a
+            // plain identifier — the parameter is bound directly to the Series
+            // of UDT instances passed in by the caller. For globally-scoped
+            // UDT instances, fall through to the standard scoped reference.
+            const baseRef = scopeManager.isLocalSeriesVar(baseName)
+                ? (() => {
+                      const id = ASTFactory.createIdentifier(baseName);
+                      id._skipTransformation = true;
+                      return id;
+                  })()
+                : createScopedVariableReference(baseName, scopeManager);
+            // Replace leaf `bar` with `$.get(<base-ref>, lookback)` and drop
             // the outer `[N]` — the chain (`.low`) now reads from the previous
             // bar's UDT instance.
-            cursor.object = ASTFactory.createGetCall(
-                createScopedVariableReference(baseName, scopeManager),
-                memberNode.property,
-            );
+            cursor.object = ASTFactory.createGetCall(baseRef, memberNode.property);
             // Re-anchor memberNode to the (now-rewritten) inner MemberExpression.
             const inner = memberNode.object;
             Object.assign(memberNode, inner);
@@ -1508,11 +1516,12 @@ export function transformCallExpression(node: any, scopeManager: ScopeManager, n
 
             // The method identifier needs to be transformed to its scoped name if necessary
             // But here 'method' is just the property name node. We need an Identifier for the function.
-            // Since function declarations are not renamed in transformFunctionDeclaration and are local identifiers,
-            // we should use the identifier directly.
+            // Methods are emitted with a `$M_` prefix on their JS name to avoid
+            // collision with regular functions of the same Pine name. Resolve
+            // the call against the prefixed JS identifier.
             // Mark with _skipTransformation to prevent the identifier from being resolved
             // to a same-named variable (e.g. `isSame2` function vs `isSame2` variable).
-            const functionRef = ASTFactory.createIdentifier(methodName);
+            const functionRef = ASTFactory.createIdentifier(`$M_${methodName}`);
             functionRef._skipTransformation = true;
 
             const newArgs = [functionRef, callId, transformedObj, ...transformedArgs];
