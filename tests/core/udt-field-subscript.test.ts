@@ -355,9 +355,17 @@ plot(close)
         expect(jsCode).not.toMatch(/\$\.init\([^,]+,\s*\$\.get\(\$\.let\.glb1_bar,\s*0\)\.low_v,\s*1\)/);
     });
 
-    it('rewrites `bar.field[N]` inside a function-call arg to `$.param($.get(<scoped-bar>, 0).field, N, ...)`', () => {
-        // Bug 2: previously emitted `$.param(bar.field, N, ...)` with bare `bar`,
-        // throwing "bar is not defined" at runtime.
+    it('rewrites `bar.field[N]` inside a function-call arg to `$.get(<scoped-bar>, N).field` (no $.param wrap)', () => {
+        // Bug 2 (original fix): previously emitted `$.param(bar.field, N, ...)`
+        // with bare `bar`, throwing "bar is not defined".
+        // Bug 4 (newer fix): even after scoping the leaf, wrapping the SCALAR
+        // result in `$.param(scalar, N, name)` produced wrong values when the
+        // call site was inside a conditional block — `$.param`'s history is
+        // per-call, not per-bar, so lookback returned values from the previous
+        // firing instead of from N bars earlier in time.
+        // Correct shape: bypass `$.param` and lookback directly on the bar
+        // series, which IS populated every bar. The arg becomes a raw
+        // `$.get(<scoped-bar>, N).field` MemberExpression.
         const code = `
 //@version=6
 indicator("udt subscript function arg")
@@ -371,9 +379,12 @@ plot(close)
         const result = transpile(code);
         const jsCode = result.toString();
 
-        // The leaf base must be scoped; the lookback can live in $.param.
-        expect(jsCode).toMatch(/\$\.param\(\$\.get\(\$\.let\.glb1_bar,\s*0\)\.low_v,\s*1,/);
-        // Must NOT regress to bare `bar.low_v` in the param arg
+        // The arg passed to `identity` (via `$.call(...)`) must be the direct
+        // lookback expression with `N` baked into `$.get(...)` itself.
+        expect(jsCode).toMatch(/\$\.get\(\$\.let\.glb1_bar,\s*1\)\.low_v/);
+        // The buggy `$.param(scalar, N, ...)` wrapper must NOT appear.
+        expect(jsCode).not.toMatch(/\$\.param\(\$\.get\(\$\.let\.glb1_bar,\s*0\)\.low_v,\s*1\b/);
+        // Must NOT regress to bare `bar.low_v` either.
         expect(jsCode).not.toMatch(/\$\.param\(bar\.low_v,/);
     });
 

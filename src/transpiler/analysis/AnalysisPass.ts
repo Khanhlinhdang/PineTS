@@ -400,6 +400,15 @@ export function runAnalysisPass(ast: any, scopeManager: ScopeManager): string | 
             if (node.id && node.id.name) {
                 scopeManager.addReservedName(node.id.name);
                 scopeManager.addUserFunction(node.id.name);
+                // Track regular (non-method) user functions separately so
+                // UFCS-style direct calls to method-only Pine declarations
+                // (`foo(receiver, args)` where `foo` was declared as
+                // `method foo(...)`) can be retargeted to the `$M_` JS name.
+                // Methods are emitted with a `$M_` JS prefix; absence of
+                // that prefix means it's a regular function.
+                if (!node.id.name.startsWith('$M_')) {
+                    scopeManager.addRegularUserFunction(node.id.name);
+                }
             }
         },
         // Detect Pine `method` markers emitted by codegen: name.__pineMethod__ = true;

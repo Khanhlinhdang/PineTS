@@ -64,6 +64,17 @@ export class ScopeManager {
     private reservedNames: Set<string> = new Set();
     private userFunctions: Set<string> = new Set();
     private userMethods: Set<string> = new Set();
+    /**
+     * Regular user-declared functions (i.e. NOT methods). Tracked separately
+     * from `userFunctions` so a UFCS-style direct call to a method-only
+     * declaration (`foo(receiver, args)` where `foo` was declared as
+     * `method foo(...)`) can be retargeted to the prefixed JS name.
+     *
+     * If a Pine name has both a regular function and a method form, the
+     * regular function takes precedence for direct `name(args)` calls and
+     * the method is reachable via dot-syntax `obj.name(args)`.
+     */
+    private regularUserFunctions: Set<string> = new Set();
 
     /**
      * Registry of user-defined UDT type names → their field map (fieldName → fieldType).
@@ -375,6 +386,14 @@ export class ScopeManager {
 
     isUserMethod(name: string): boolean {
         return this.userMethods.has(name);
+    }
+
+    addRegularUserFunction(name: string): void {
+        this.regularUserFunctions.add(name);
+    }
+
+    isRegularUserFunction(name: string): boolean {
+        return this.regularUserFunctions.has(name);
     }
 
     addVariable(name: string, kind: string): string {

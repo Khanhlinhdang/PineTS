@@ -944,6 +944,47 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
     const isPropertyAccess = arg.type === 'MemberExpression' && !arg.computed;
 
     if (isArrayAccess) {
+        // UDT field subscript: `bar.field[N]` (and chained `bar.outer.inner[N]`)
+        // where the leaf base is a registered UDT instance. Pine semantics:
+        // `bar = BAR.new()` runs every bar, so `$.let.glb1_bar` is a Series of
+        // PineTypeObject instances; `$.get(<scoped-bar>, N).field` returns the
+        // field value at N bars ago.
+        //
+        // The default `$.param(scalar, N, name)` wrapping is WRONG for this
+        // pattern when the call site is inside a conditional block — the
+        // accumulated history is per-call, not per-bar, so lookback skips
+        // over bars where the if-branch didn't fire and returns stale values
+        // from the *previous firing* instead of from N bars ago in time.
+        // Direct lookback on the bar series bypasses the param machinery
+        // entirely and works correctly regardless of call-site conditionality.
+        if (arg.object && arg.object.type === 'MemberExpression') {
+            let cursor: any = arg.object;
+            while (cursor.object && cursor.object.type === 'MemberExpression') {
+                cursor = cursor.object;
+            }
+            if (cursor.object?.type === 'Identifier' &&
+                scopeManager.isUdtInstance(cursor.object.name)) {
+                const baseName = cursor.object.name;
+                // Function-parameter UDT (Case 2): leaf must stay a plain
+                // identifier — the param is already bound to the Series of
+                // UDT instances passed in by the caller.
+                const baseRef = scopeManager.isLocalSeriesVar(baseName)
+                    ? (() => {
+                          const id = ASTFactory.createIdentifier(baseName);
+                          id._skipTransformation = true;
+                          return id;
+                      })()
+                    : createScopedVariableReference(baseName, scopeManager);
+                cursor.object = ASTFactory.createGetCall(baseRef, arg.property);
+                // `arg.object` is now the rewritten `$.get(<base>, N).field…`
+                // chain; it replaces the whole `arg` expression. The outer
+                // `$.param(...)` wrapper that the rest of this branch would
+                // have applied is intentionally skipped — the lookback is
+                // already baked into `$.get(...)`.
+                return arg.object;
+            }
+        }
+
         // Ensure complex objects are transformed before being used as array source
         if (arg.object.type === 'CallExpression') {
             transformCallExpression(arg.object, scopeManager);
@@ -1444,8 +1485,21 @@ export function transformCallExpression(node: any, scopeManager: ScopeManager, n
             // Create $.call access
             const contextCall = ASTFactory.createMemberExpression(ASTFactory.createContextIdentifier(), ASTFactory.createIdentifier('call'));
 
+            // Pine UFCS: a method `method foo(X this, ...)` can be called via
+            // `foo(receiver, args)` as well as `obj.foo(args)`. When the Pine
+            // name has NO regular function form (only the method), retarget
+            // the direct-call callee to the `$M_` JS identifier — otherwise
+            // `foo` is unbound at runtime ("foo is not defined"). When both
+            // forms exist, the regular function takes precedence.
+            const calleeName = node.callee.name;
+            let fnRef: any = node.callee;
+            if (scopeManager.isUserMethod(calleeName) && !scopeManager.isRegularUserFunction(calleeName)) {
+                fnRef = ASTFactory.createIdentifier(`$M_${calleeName}`);
+                fnRef._skipTransformation = true;
+            }
+
             // Construct new arguments list: [originalFn, callId, ...originalArgs]
-            const newArgs = [node.callee, callId, ...node.arguments];
+            const newArgs = [fnRef, callId, ...node.arguments];
 
             // Update node
             node.callee = contextCall;
