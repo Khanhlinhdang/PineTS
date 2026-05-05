@@ -54,11 +54,13 @@ export class PolylineHelper {
     }
 
     /**
-     * Resolve a color value, preserving NaN (na = no color) instead of
-     * letting it fall through to a default via the || operator.
+     * Resolve a color value, preserving na markers (NaN from `na`, null from
+     * `color(na)`) so renderers can detect "no color" instead of forcing a
+     * default via the `||` operator.
      */
     private _resolveColor(val: any, fallback: string): any {
         const resolved = this._resolve(val);
+        if (resolved === null || resolved === undefined) return resolved;
         if (typeof resolved === 'number' && isNaN(resolved)) return NaN;
         return resolved || fallback;
     }

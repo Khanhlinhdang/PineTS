@@ -426,4 +426,37 @@ plot(close)
         // The surviving one is the last one (bar_index = 4)
         expect(lines[0].x1).toBe(4);
     });
+
+    // Regression: `line.new(..., color = na)` and `color = color(na)` must
+    // serialize a na marker so QFChart can skip stroking. The QFChart-side
+    // fallback used to paint these lines as default Pine blue (#2962ff).
+    // Mirrors the invisible anchor lines in Range-Intelligence-Suite-LuxAlgo
+    // (`line uL = line.new(..., color = na)` used as linefill endpoints).
+    it('line.new(color = na) serialises na marker (not a colour string)', async () => {
+        const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', 50, new Date('2025-01-01').getTime(), new Date('2025-03-01').getTime());
+        const { plots } = await pineTS.run(`//@version=6
+indicator("probe", overlay = true)
+if barstate.isfirst
+    line ln = line.new(0, 100, 5, 50, color = na)
+`);
+        const ln = plots['__lines__']?.data?.[0]?.value?.[0];
+        expect(ln).toBeDefined();
+        const isNa = (v: any) => v === null || v === undefined || (typeof v === 'number' && isNaN(v));
+        expect(isNa(ln.color)).toBe(true);
+        expect(ln.color).not.toBe('#2962ff');
+    });
+
+    it('line.new(color = color(na)) serialises na marker', async () => {
+        const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', 50, new Date('2025-01-01').getTime(), new Date('2025-03-01').getTime());
+        const { plots } = await pineTS.run(`//@version=6
+indicator("probe", overlay = true)
+if barstate.isfirst
+    line ln = line.new(0, 100, 5, 50, color = color(na))
+`);
+        const ln = plots['__lines__']?.data?.[0]?.value?.[0];
+        expect(ln).toBeDefined();
+        const isNa = (v: any) => v === null || v === undefined || (typeof v === 'number' && isNaN(v));
+        expect(isNa(ln.color)).toBe(true);
+        expect(ln.color).not.toBe('#2962ff');
+    });
 });
