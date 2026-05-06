@@ -915,7 +915,12 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
             arg = getParamFromUnaryExpression(arg, scopeManager, namespace);
             break;
         case 'ArrayExpression':
-            // Transform each element in the array
+            // Transform each element in the array. Non-Identifier elements
+            // (e.g. nested calls like `ta.sma(volume, maLenInput)` inside a
+            // `request.security_lower_tf(..., [open, close, ta.sma(...)])`
+            // tuple) must also be transformed so their nested identifiers
+            // get scoped — otherwise `maLenInput` leaks bare and throws
+            // "ReferenceError: maLenInput is not defined" at runtime.
             arg.elements = arg.elements.map((element: any) => {
                 if (element.type === 'Identifier') {
                     // Transform identifiers to use $.get(variable, 0)
@@ -931,6 +936,28 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
                     }
                     // It's a user variable - transform to context reference
                     return createScopedVariableAccess(element.name, scopeManager);
+                }
+                // Recurse into non-Identifier elements using the same helpers
+                // the outer switch uses when these shapes appear at top level.
+                if (element.type === 'CallExpression') {
+                    transformCallExpression(element, scopeManager);
+                    return element;
+                }
+                if (element.type === 'BinaryExpression') {
+                    return getParamFromBinaryExpression(element, scopeManager, namespace);
+                }
+                if (element.type === 'LogicalExpression') {
+                    return getParamFromLogicalExpression(element, scopeManager, namespace);
+                }
+                if (element.type === 'ConditionalExpression') {
+                    return getParamFromConditionalExpression(element, scopeManager, namespace);
+                }
+                if (element.type === 'UnaryExpression') {
+                    return getParamFromUnaryExpression(element, scopeManager, namespace);
+                }
+                if (element.type === 'MemberExpression') {
+                    transformMemberExpression(element, namespace, scopeManager);
+                    return element;
                 }
                 return element;
             });
