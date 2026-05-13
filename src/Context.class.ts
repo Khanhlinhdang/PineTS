@@ -123,6 +123,12 @@ export class Context {
     public eDate: number;
     public fullContext: Context;
 
+    // Host-bound viewport state. PineTS.setVisibleRange() flows these in via
+    // _initializeContext. Undefined means "no override" — ChartHelper falls
+    // back to marketData[0]/[last].openTime.
+    public viewportLeft: number | undefined = undefined;
+    public viewportRight: number | undefined = undefined;
+
     public pineTSCode: Function | String;
 
     public inputs: Record<string, any> = {};
@@ -301,6 +307,18 @@ export class Context {
             is_range: chartHelper.is_range.bind(chartHelper),
             is_renko: chartHelper.is_renko.bind(chartHelper),
             point: chartHelper.point,
+            // Visible-range built-ins. Host (e.g. chart UI) overrides via
+            // PineTS.setVisibleRange(); fallback is the loaded data range.
+            get left_visible_bar_time() {
+                if (_this.viewportLeft !== undefined) return _this.viewportLeft;
+                const md = _this.marketData;
+                return Array.isArray(md) && md.length > 0 ? md[0].openTime : NaN;
+            },
+            get right_visible_bar_time() {
+                if (_this.viewportRight !== undefined) return _this.viewportRight;
+                const md = _this.marketData;
+                return Array.isArray(md) && md.length > 0 ? md[md.length - 1].openTime : NaN;
+            },
         };
 
         // label namespace
