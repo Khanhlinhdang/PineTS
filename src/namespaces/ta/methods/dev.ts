@@ -14,11 +14,13 @@ export function dev(context: any) {
             context.taState[stateKey] = { 
                 lastIdx: -1,
                 // Committed state
-                prevWindow: [], 
+                prevWindow: [],
                 prevSum: 0,
+                prevCallCount: 0,
                 // Tentative state
                 currentWindow: [],
                 currentSum: 0,
+                currentCallCount: 0,
             };
         }
 
@@ -29,6 +31,7 @@ export function dev(context: any) {
             if (state.lastIdx >= 0) {
                 state.prevWindow = [...state.currentWindow];
                 state.prevSum = state.currentSum;
+                state.prevCallCount = state.currentCallCount;
             }
             state.lastIdx = context.idx;
         }
@@ -41,13 +44,25 @@ export function dev(context: any) {
         window.unshift(currentValue);
         sum += currentValue;
 
-        if (window.length > length) {
+        while (window.length > length) {
             const oldValue = window.pop();
             sum -= oldValue;
         }
 
+        // Track actual call count for callsite-correct backfill
+        const callCount = state.prevCallCount + 1;
+        if (window.length < length && (callCount >= length || context.idx >= length - 1)) {
+            const series = Series.from(source);
+            while (window.length < length) {
+                const val = series.get(window.length);
+                window.push(val);
+                sum += val;
+            }
+        }
+
         state.currentWindow = window;
         state.currentSum = sum;
+        state.currentCallCount = callCount;
 
         if (window.length < length) {
             return NaN;

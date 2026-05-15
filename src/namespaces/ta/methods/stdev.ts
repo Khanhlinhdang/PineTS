@@ -17,9 +17,11 @@ export function stdev(context: any) {
                 // Committed state
                 prevWindow: [],
                 prevSum: 0,
+                prevCallCount: 0,
                 // Tentative state
                 currentWindow: [],
                 currentSum: 0,
+                currentCallCount: 0,
             };
         }
 
@@ -30,6 +32,7 @@ export function stdev(context: any) {
             if (state.lastIdx >= 0) {
                 state.prevWindow = [...state.currentWindow];
                 state.prevSum = state.currentSum;
+                state.prevCallCount = state.currentCallCount;
             }
             state.lastIdx = context.idx;
         }
@@ -48,20 +51,31 @@ export function stdev(context: any) {
         window.unshift(currentValue);
         sum += currentValue;
 
-        if (window.length < length) {
-            state.currentWindow = window;
-            state.currentSum = sum;
-            return NaN;
-        }
-
-        if (window.length > length) {
+        while (window.length > length) {
             const oldValue = window.pop();
             sum -= oldValue;
+        }
+
+        // Track actual call count for callsite-correct backfill
+        const callCount = state.prevCallCount + 1;
+        if (window.length < length && (callCount >= length || context.idx >= length - 1)) {
+            const series = Series.from(source);
+            while (window.length < length) {
+                const val = series.get(window.length);
+                if (val === null || val === undefined || isNaN(val)) break;
+                window.push(val);
+                sum += val;
+            }
         }
 
         // Update tentative state
         state.currentWindow = window;
         state.currentSum = sum;
+        state.currentCallCount = callCount;
+
+        if (window.length < length) {
+            return NaN;
+        }
 
         const mean = sum / length;
         let sumSquaredDiff = 0;

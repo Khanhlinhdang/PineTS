@@ -5,9 +5,23 @@ import { Context } from '../../../Context.class';
 
 export function get(context: Context) {
     return (id: PineMatrixObject, row: number, col: number) => {
-        if (!id.matrix[row]) return NaN;
+        const rows = id.matrix.length;
+        const cols = rows > 0 ? id.matrix[0].length : 0;
+        if (row < 0 || row >= rows) {
+            context.warn(
+                `Row index ${row} is out of bounds, matrix has ${rows} rows.`,
+                'matrix.get'
+            );
+            return NaN;
+        }
+        if (col < 0 || col >= cols) {
+            context.warn(
+                `Column index ${col} is out of bounds, matrix has ${cols} columns.`,
+                'matrix.get'
+            );
+            return NaN;
+        }
         const val = id.matrix[row][col];
         return val === undefined ? NaN : val;
     };
 }
-

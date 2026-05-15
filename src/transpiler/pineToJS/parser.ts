@@ -40,6 +40,17 @@ import {
 export class Parser {
     private tokens: Token[];
     private pos: number;
+    private functionNames: Set<string> = new Set();
+    // Stack of parameter-name sets for currently-being-parsed function bodies.
+    // When the body of fn `f(x, y) =>` is being parsed, the top frame is {x, y}.
+    // Used to suppress the `name → name_var` rewrite for identifiers that are
+    // really parameters of the enclosing function and just happen to share a
+    // name with some other user function.
+    private paramScopes: Set<string>[] = [];
+    // When true, peekOperatorEx does NOT cross NEWLINE boundaries at all.
+    // Used inside single-line switch case bodies to prevent binary operator
+    // continuation from absorbing the next case's negative test value.
+    private noLineContinuation: boolean = false;
     constructor(tokens: Token[]) {
         this.tokens = tokens;
         this.pos = 0;
@@ -48,6 +59,16 @@ export class Parser {
     // Utility methods
     peek(offset = 0) {
         return this.tokens[this.pos + offset] || this.tokens[this.tokens.length - 1];
+    }
+
+    // True if `name` is a parameter of any function whose body we're currently
+    // parsing. Used to suppress the global `name → name_var` rewrite for
+    // parameters that just happen to share a name with a user function.
+    private isCurrentFunctionParam(name: string): boolean {
+        for (const frame of this.paramScopes) {
+            if (frame.has(name)) return true;
+        }
+        return false;
     }
 
     advance() {
@@ -72,6 +93,29 @@ export class Parser {
         return this.advance();
     }
 
+    // Pine v5/v6 contextual keywords — reserved only in their declaration-introducing
+    // position (e.g. `type Foo`, `method bar(...)`, `enum E`), but valid as identifiers
+    // anywhere else (e.g. as a UDT field name, function parameter, variable).
+    private static readonly CONTEXTUAL_KEYWORDS = new Set([
+        'type', 'method', 'enum',
+    ]);
+
+    /**
+     * Consume an identifier OR a contextual keyword used as an identifier.
+     * Used in positions where Pine permits soft keywords as names — most notably
+     * UDT field names like `int type = 0`.
+     */
+    expectIdentifierOrContextual(): Token {
+        const token = this.peek();
+        if (token.type === TokenType.IDENTIFIER) {
+            return this.advance();
+        }
+        if (token.type === TokenType.KEYWORD && Parser.CONTEXTUAL_KEYWORDS.has(token.value)) {
+            return this.advance();
+        }
+        throw new Error(`Expected ${TokenType.IDENTIFIER} but got ${token.type} at ${token.line}:${token.column}`);
+    }
+
     // Match a token, optionally ignoring NEWLINE and INDENT (for line continuation)
     matchEx(type, value = null, allowLineContinuation = false) {
         if (!allowLineContinuation) {
@@ -81,11 +125,16 @@ export class Parser {
         let offset = 0;
         let token = this.peek(offset);
 
+        // In single-line switch case bodies, do NOT cross newlines
+        if (token.type === TokenType.NEWLINE && this.noLineContinuation) {
+            return false;
+        }
+
         // Skip NEWLINE and subsequent INDENT
         if (token.type === TokenType.NEWLINE) {
             offset++;
             token = this.peek(offset);
-            
+
             // Optional INDENT after NEWLINE
             if (token.type === TokenType.INDENT) {
                 offset++;
@@ -100,12 +149,54 @@ export class Parser {
         for (let i = 0; i < offset; i++) {
             this.advance();
         }
-        
+
         return true;
     }
 
+    // Peek ahead for an operator, optionally ignoring NEWLINE and INDENT (non-consuming unless matched)
+    // Returns the operator value if found, null otherwise
+    // IMPORTANT: Does NOT match across NEWLINE+INDENT for ambiguous operators (+, -)
+    // that could be unary, since NEWLINE+INDENT indicates a new indented block
+    peekOperatorEx(validOps: string[]) {
+        let offset = 0;
+        let token = this.peek(offset);
+        let crossedIndent = false;
+
+        // Skip NEWLINE and subsequent INDENT
+        if (token.type === TokenType.NEWLINE) {
+            // In single-line switch case bodies, do NOT cross newlines at all
+            if (this.noLineContinuation) return null;
+
+            offset++;
+            token = this.peek(offset);
+
+            // Optional INDENT after NEWLINE
+            if (token.type === TokenType.INDENT) {
+                crossedIndent = true;
+                offset++;
+                token = this.peek(offset);
+            }
+        }
+
+        if (token.type !== TokenType.OPERATOR) return null;
+        if (!validOps.includes(token.value)) return null;
+
+        // If we crossed an INDENT boundary and the operator is ambiguous (could be unary),
+        // do NOT treat it as a binary operator continuation
+        if (crossedIndent && (token.value === '+' || token.value === '-')) {
+            return null;
+        }
+
+        // Only now consume the skipped NEWLINE/INDENT tokens
+        for (let i = 0; i < offset; i++) {
+            this.advance();
+        }
+        return token.value;
+    }
+
     skipNewlines(allowIndent = false) {
-        while (this.match(TokenType.NEWLINE)) {
+        // while (this.match(TokenType.NEWLINE)) {
+        while (this.match(TokenType.NEWLINE) || this.match(TokenType.COMMENT)) {
             this.advance();
         }
         if (allowIndent && this.match(TokenType.INDENT)) {
@@ -138,7 +229,7 @@ export class Parser {
     }
 
     // Parse statement
-    parseStatement() {
+    parseStatement(handleCommas = true) {
         this.skipNewlines();
 
         const startLine = this.peek().line;
@@ -151,8 +242,12 @@ export class Parser {
 
         let stmt;
 
+        // Enum definition
+        if (this.match(TokenType.KEYWORD, 'enum')) {
+            stmt = this.parseEnumDefinition();
+        }
         // Type definition
-        if (this.match(TokenType.KEYWORD, 'type')) {
+        else if (this.match(TokenType.KEYWORD, 'type')) {
             stmt = this.parseTypeDefinition();
         }
         // Variable declaration (var/varip)
@@ -191,16 +286,10 @@ export class Parser {
         // Check for typed variable declaration (type identifier = ...)
         // Pattern: IDENTIFIER IDENTIFIER OPERATOR(=)
         // Also handles: IDENTIFIER IDENTIFIER IDENTIFIER OPERATOR(=) for multi-qualifier types
-        else if (this.peek().type === TokenType.IDENTIFIER && this.peek(1).type === TokenType.IDENTIFIER) {
-            // Check if this is a typed variable declaration
-            let offset = 2;
-            // Skip additional type qualifiers (series float x, simple int y, etc.)
-            while (this.peek(offset).type === TokenType.IDENTIFIER) {
-                offset++;
-            }
-            if (this.peek(offset).type === TokenType.OPERATOR && this.peek(offset).value === '=') {
-                stmt = this.parseTypedVarDeclaration();
-            }
+        // Also handles: IDENTIFIER[] IDENTIFIER OPERATOR(=) for array shorthand (float[] x = ...)
+        // Also handles: IDENTIFIER<...> IDENTIFIER OPERATOR(=) for generic types (array<float> x = ...)
+        else if (this.peek().type === TokenType.IDENTIFIER && this.isTypedVarDeclaration()) {
+            stmt = this.parseTypedVarDeclaration();
         }
 
         if (!stmt) {
@@ -233,6 +322,26 @@ export class Parser {
         // Attach line number to statement
         if (stmt) {
             stmt._line = startLine;
+            
+            // Handle comma-separated statements on the same line: a = high, b = low
+            // Only handle commas at the top level (not in recursive calls)
+            if (handleCommas && this.match(TokenType.COMMA) && this.peek().line === startLine) {
+                const statements = [stmt];
+                
+                while (this.match(TokenType.COMMA) && this.peek().line === startLine) {
+                    this.advance(); // consume comma
+                    this.skipNewlines(true); // skip any whitespace after comma
+                    
+                    // Parse the next statement on the same line (don't handle commas recursively)
+                    const nextStmt = this.parseStatement(false);
+                    if (nextStmt) {
+                        statements.push(nextStmt);
+                    }
+                }
+                
+                // Return a BlockStatement containing all comma-separated statements
+                return new BlockStatement(statements);
+            }
         }
 
         return stmt;
@@ -281,6 +390,102 @@ export class Parser {
     }
 
     // Parse type definition (v5: type X => fields, v6: type X\n fields)
+    // Parse type expression with support for generics (e.g., array<float>, map<string, int>)
+    parseTypeExpression() {
+        // Parse base type (e.g., "array", "matrix", "map", "float", "chart.point")
+        let baseType = this.expect(TokenType.IDENTIFIER).value;
+
+        // Handle dotted type names: chart.point, line.style, etc.
+        while (this.match(TokenType.DOT) && this.peek(1).type === TokenType.IDENTIFIER) {
+            this.advance(); // consume .
+            baseType += '.' + this.advance().value; // consume identifier
+        }
+
+        // Check for generic parameters: array<float>, map<string, float>
+        if (this.match(TokenType.OPERATOR, '<')) {
+            this.advance(); // consume '<'
+
+            const typeArgs = [];
+
+            // Parse first type argument (recursive for nested generics)
+            typeArgs.push(this.parseTypeExpression());
+
+            // Parse additional type arguments (for map<K, V>)
+            while (this.match(TokenType.COMMA)) {
+                this.advance();
+                this.skipNewlines();
+                typeArgs.push(this.parseTypeExpression());
+            }
+
+            this.expect(TokenType.OPERATOR, '>'); // consume '>'
+
+            // Return as string representation: "array<float>"
+            return baseType + '<' + typeArgs.join(', ') + '>';
+        }
+
+        // Handle shorthand array syntax: int[] or int [] (with optional space)
+        // Pine Script allows both `int[]` and `int []` as array type notation
+        if (this.match(TokenType.LBRACKET) && this.peek(1).type === TokenType.RBRACKET) {
+            this.advance(); // consume '['
+            this.advance(); // consume ']'
+            return 'array<' + baseType + '>';
+        }
+
+        return baseType; // Simple type: "float", "int", etc.
+    }
+
+    // Parse enum definition. Supports both Pine v6 forms:
+    //   enum X            (untitled — bare member names)
+    //       a
+    //       b
+    //   enum Y            (titled — `member = "title"`)
+    //       a = "Alpha"
+    //       b = "Beta"
+    //
+    // Runtime value matches TradingView's str.tostring(EnumName.member):
+    //   - titled: the title string verbatim (incl. empty `""`)
+    //   - untitled: just the member name (e.g. "a", NOT "X.a")
+    parseEnumDefinition() {
+        this.expect(TokenType.KEYWORD, 'enum');
+        const name = this.expect(TokenType.IDENTIFIER).value;
+
+        this.skipNewlines();
+        this.expect(TokenType.INDENT);
+
+        const members: { name: string; title: string | null }[] = [];
+        while (!this.match(TokenType.DEDENT) && !this.match(TokenType.EOF)) {
+            this.skipNewlines();
+            if (this.match(TokenType.DEDENT)) break;
+            if (this.match(TokenType.COMMENT)) {
+                this.advance();
+                continue;
+            }
+
+            const memberName = this.expect(TokenType.IDENTIFIER).value;
+            let memberTitle: string | null = null;
+            if (this.match(TokenType.OPERATOR, '=')) {
+                this.advance(); // consume '='
+                memberTitle = this.expect(TokenType.STRING).value;
+            }
+            members.push({ name: memberName, title: memberTitle });
+            this.skipNewlines();
+        }
+
+        if (this.match(TokenType.DEDENT)) {
+            this.advance();
+        }
+
+        // Generate: const Name = { member: title-or-name, ... }
+        const props = members.map((m) =>
+            new Property(new Identifier(m.name), new Literal(m.title !== null ? m.title : m.name)),
+        );
+        const objExpr = new ObjectExpression(props);
+        return new VariableDeclaration(
+            [new VariableDeclarator(new Identifier(name), objExpr)],
+            VariableDeclarationKind.CONST
+        );
+    }
+
     parseTypeDefinition() {
         this.expect(TokenType.KEYWORD, 'type');
         const name = this.expect(TokenType.IDENTIFIER).value;
@@ -300,8 +505,10 @@ export class Parser {
             if (this.match(TokenType.DEDENT)) break;
 
             // Parse field: type name [= defaultValue]
-            const fieldType = this.expect(TokenType.IDENTIFIER).value;
-            const fieldName = this.expect(TokenType.IDENTIFIER).value;
+            const fieldType = this.parseTypeExpression(); // Now handles generics
+            // Field names may be contextual keywords (e.g. `int type = 0`) — Pine
+            // treats `type`/`method`/`enum` as identifiers outside their declaration context.
+            const fieldName = this.expectIdentifierOrContextual().value;
 
             let defaultValue = null;
             if (this.match(TokenType.OPERATOR, '=')) {
@@ -349,13 +556,26 @@ export class Parser {
             name = this.expect(TokenType.IDENTIFIER).value;
         } else if (
             this.peek().type === TokenType.IDENTIFIER &&
-            (this.peek(1).type === TokenType.IDENTIFIER || (this.peek(1).type === TokenType.OPERATOR && this.peek(1).value === '<'))
+            (this.peek(1).type === TokenType.DOT || this.peek(1).type === TokenType.IDENTIFIER || (this.peek(1).type === TokenType.OPERATOR && this.peek(1).value === '<'))
         ) {
-            // Has type: var type name = ... or var type<generic> name = ...
+            // Has type: var type name = ..., var type<generic> name = ..., or var ns.type name = ...
             varType = this.advance().value;
 
+            // Handle dotted type names: chart.point, line.style, etc.
+            while (this.match(TokenType.DOT) && this.peek(1).type === TokenType.IDENTIFIER) {
+                this.advance(); // consume .
+                varType += '.' + this.advance().value; // consume identifier
+            }
+
+            // Handle array shorthand after dotted type: chart.point[] name = ...
+            if (this.match(TokenType.LBRACKET) && this.peek(1).type === TokenType.RBRACKET) {
+                this.advance(); // consume [
+                this.advance(); // consume ]
+                varType += '[]';
+                name = this.expect(TokenType.IDENTIFIER).value;
+            }
             // Handle generic type syntax: array<float>, map<string, int>, etc.
-            if (this.match(TokenType.OPERATOR, '<')) {
+            else if (this.match(TokenType.OPERATOR, '<')) {
                 this.advance(); // consume <
                 varType += '<';
 
@@ -363,6 +583,12 @@ export class Parser {
                 while (!this.match(TokenType.OPERATOR, '>')) {
                     if (this.match(TokenType.IDENTIFIER)) {
                         varType += this.advance().value;
+                        // Handle dotted types inside generics: map<string, chart.point>
+                        while (this.match(TokenType.DOT) && this.peek(1).type === TokenType.IDENTIFIER) {
+                            varType += '.';
+                            this.advance(); // consume .
+                            varType += this.advance().value; // consume identifier
+                        }
                     } else if (this.match(TokenType.COMMA)) {
                         varType += this.advance().value;
                         this.skipNewlines();
@@ -375,14 +601,20 @@ export class Parser {
                     varType += '>';
                     this.advance();
                 }
-            }
 
-            name = this.expect(TokenType.IDENTIFIER).value;
+                name = this.expect(TokenType.IDENTIFIER).value;
+            } else {
+                name = this.expect(TokenType.IDENTIFIER).value;
+            }
         } else if (this.peek().type === TokenType.IDENTIFIER) {
             // No type: var name = ...
             name = this.advance().value;
         } else {
             throw new Error(`Expected identifier after ${kind} at ${this.peek().line}:${this.peek().column}`);
+        }
+
+        if (this.functionNames.has(name)) {
+            name = name + '_var';
         }
 
         this.expect(TokenType.OPERATOR, '=');
@@ -394,19 +626,136 @@ export class Parser {
             id.varType = varType;
         }
 
-        return new VariableDeclaration([new VariableDeclarator(id, init, varType)], kind);
+        const declarators = [new VariableDeclarator(id, init, varType)];
+
+        // Handle comma-separated var declarations on the same line:
+        //   var int dir = na, var int x1 = na, var float y1 = na
+        // Each segment after the comma is a full "var type name = expr".
+        while (
+            this.match(TokenType.COMMA) &&
+            this.peek(1).type === TokenType.KEYWORD &&
+            (this.peek(1).value === 'var' || this.peek(1).value === 'varip')
+        ) {
+            this.advance(); // consume ','
+            // Recursively parse the next "var type name = expr" segment
+            const extraDecl = this.parseVarDeclaration();
+            // Merge declarators from the recursively parsed declaration
+            declarators.push(...extraDecl.declarations);
+        }
+
+        return new VariableDeclaration(declarators, kind);
+    }
+
+    // Lookahead to detect typed variable declaration patterns:
+    //   IDENTIFIER IDENTIFIER ... IDENTIFIER = (simple: int x =, series float x =)
+    //   IDENTIFIER [] IDENTIFIER = (array shorthand: float[] x =)
+    //   IDENTIFIER <...> IDENTIFIER = (generic: array<float> x =)
+    //   IDENTIFIER.IDENTIFIER[] IDENTIFIER = (dotted array: chart.point[] x =)
+    //   IDENTIFIER.IDENTIFIER<...> IDENTIFIER = (dotted generic: map<string, chart.point> x =)
+    isTypedVarDeclaration() {
+        let offset = 0;
+
+        // First token must be IDENTIFIER (already checked by caller)
+        if (this.peek(offset).type !== TokenType.IDENTIFIER) return false;
+        offset++;
+
+        // Skip dotted type name: chart.point, line.style, etc.
+        while (this.peek(offset).type === TokenType.DOT && this.peek(offset + 1).type === TokenType.IDENTIFIER) {
+            offset += 2; // skip . and IDENTIFIER
+        }
+
+        // Check for array shorthand: type[] name =
+        if (this.peek(offset).type === TokenType.LBRACKET && this.peek(offset + 1).type === TokenType.RBRACKET) {
+            offset += 2; // skip []
+            // Now expect IDENTIFIER (name) then =
+            if (this.peek(offset).type !== TokenType.IDENTIFIER) return false;
+            offset++;
+            return this.peek(offset).type === TokenType.OPERATOR && this.peek(offset).value === '=';
+        }
+
+        // Check for generic type: type<...> name =
+        if (this.peek(offset).type === TokenType.OPERATOR && this.peek(offset).value === '<') {
+            offset++; // skip <
+            let depth = 1;
+            // Skip until matching >
+            while (depth > 0 && this.peek(offset).type !== TokenType.EOF) {
+                if (this.peek(offset).type === TokenType.OPERATOR && this.peek(offset).value === '<') depth++;
+                else if (this.peek(offset).type === TokenType.OPERATOR && this.peek(offset).value === '>') depth--;
+                offset++;
+            }
+            // Now expect IDENTIFIER (name) then =
+            if (this.peek(offset).type !== TokenType.IDENTIFIER) return false;
+            offset++;
+            return this.peek(offset).type === TokenType.OPERATOR && this.peek(offset).value === '=';
+        }
+
+        // Check for simple typed declaration: type name = or type qualifier name =
+        if (this.peek(offset).type !== TokenType.IDENTIFIER) return false;
+        offset++;
+        // Skip additional type qualifiers (series float x, simple int y, etc.)
+        while (this.peek(offset).type === TokenType.IDENTIFIER) {
+            offset++;
+        }
+        return this.peek(offset).type === TokenType.OPERATOR && this.peek(offset).value === '=';
     }
 
     // Parse typed variable declaration (int x = ... or series float x = ...)
+    // Also handles: type[] name = ..., type<generic> name = ..., ns.type[] name = ...
     parseTypedVarDeclaration() {
         let varType = this.advance().value;
 
-        // Handle multi-qualifier types (series float, simple int, etc.)
-        while (this.peek().type === TokenType.IDENTIFIER && this.peek(1).type === TokenType.IDENTIFIER) {
-            varType += ' ' + this.advance().value;
+        // Handle dotted type names: chart.point, line.style, etc.
+        while (this.match(TokenType.DOT) && this.peek(1).type === TokenType.IDENTIFIER) {
+            this.advance(); // consume .
+            varType += '.' + this.advance().value; // consume identifier
         }
 
-        const name = this.expect(TokenType.IDENTIFIER).value;
+        // Handle array shorthand: type[] name = ...
+        if (this.match(TokenType.LBRACKET) && this.peek(1).type === TokenType.RBRACKET) {
+            this.advance(); // consume [
+            this.advance(); // consume ]
+            varType += '[]';
+        }
+        // Handle generic type: type<...> name = ...
+        else if (this.match(TokenType.OPERATOR, '<')) {
+            this.advance(); // consume <
+            varType += '<';
+
+            // Read generic type parameter(s)
+            while (!this.match(TokenType.OPERATOR, '>')) {
+                if (this.match(TokenType.IDENTIFIER)) {
+                    varType += this.advance().value;
+                    // Handle dotted types inside generics: array<chart.point>
+                    while (this.match(TokenType.DOT) && this.peek(1).type === TokenType.IDENTIFIER) {
+                        varType += '.';
+                        this.advance(); // consume .
+                        varType += this.advance().value; // consume identifier
+                    }
+                } else if (this.match(TokenType.COMMA)) {
+                    varType += this.advance().value;
+                    this.skipNewlines();
+                } else {
+                    break;
+                }
+            }
+
+            if (this.match(TokenType.OPERATOR, '>')) {
+                varType += '>';
+                this.advance();
+            }
+        }
+        // Handle multi-qualifier types (series float, simple int, etc.)
+        else {
+            while (this.peek().type === TokenType.IDENTIFIER && this.peek(1).type === TokenType.IDENTIFIER) {
+                varType += ' ' + this.advance().value;
+            }
+        }
+
+        let name = this.expect(TokenType.IDENTIFIER).value;
+        if (this.functionNames.has(name)) {
+            name = name + '_var';
+        }
+
         this.expect(TokenType.OPERATOR, '=');
         this.skipNewlines(true);
         const init = this.parseExpression();
@@ -414,7 +763,39 @@ export class Parser {
         const id = new Identifier(name);
         id.varType = varType;
 
-        return new VariableDeclaration([new VariableDeclarator(id, init, varType)], VariableDeclarationKind.LET);
+        const declarators = [new VariableDeclarator(id, init, varType)];
+
+        // Handle comma-separated typed declarations sharing the same type:
+        //   float a = 0.0, b = 1.0, c = 2.0
+        //   int x = 1, y = 2
+        //   array<float> p = na, q = na
+        // Each subsequent segment is `name = expr` with the leading type reapplied.
+        // The guard requires `, IDENT =` so we don't greedily swallow commas
+        // that belong to a separate full declaration on the same line, e.g.
+        //   chart.point[] a = ..., chart.point[] b = ...
+        // (`peek(2)` would be DOT/LBRACKET/IDENT, not `=`). Those flow up to
+        // the multi-statement handler in parseStatement (Layer 2).
+        while (
+            this.match(TokenType.COMMA) &&
+            this.peek(1).type === TokenType.IDENTIFIER &&
+            this.peek(2).type === TokenType.OPERATOR &&
+            this.peek(2).value === '='
+        ) {
+            this.advance(); // consume ','
+            this.skipNewlines(true);
+            let nextName = this.expect(TokenType.IDENTIFIER).value;
+            if (this.functionNames.has(nextName)) {
+                nextName = nextName + '_var';
+            }
+            this.expect(TokenType.OPERATOR, '=');
+            this.skipNewlines(true);
+            const nextInit = this.parseExpression();
+            const nextId = new Identifier(nextName);
+            nextId.varType = varType;
+            declarators.push(new VariableDeclarator(nextId, nextInit, varType));
+        }
+
+        return new VariableDeclaration(declarators, VariableDeclarationKind.LET);
     }
 
     // Parse function declaration
@@ -425,6 +806,8 @@ export class Parser {
         }
 
         const name = this.expect(TokenType.IDENTIFIER).value;
+        this.functionNames.add(name);
+
         this.expect(TokenType.LPAREN);
 
         const params = [];
@@ -444,6 +827,25 @@ export class Parser {
                     paramType += ' ';
                 }
                 paramType = (paramType || '') + this.advance().value;
+            }
+
+            // Handle generic type: array<float>, map<string, float>, etc.
+            if (
+                this.peek().type === TokenType.IDENTIFIER &&
+                this.peek(1).type === TokenType.OPERATOR && this.peek(1).value === '<'
+            ) {
+                const genericType = this.parseTypeExpression();
+                paramType = paramType ? paramType + ' ' + genericType : genericType;
+            }
+
+            // Handle array shorthand: int[], float[], line[], label[], etc.
+            if (
+                this.peek().type === TokenType.IDENTIFIER &&
+                this.peek(1).type === TokenType.LBRACKET &&
+                this.peek(2).type === TokenType.RBRACKET
+            ) {
+                const arrayType = this.parseTypeExpression();
+                paramType = paramType ? paramType + ' ' + arrayType : arrayType;
             }
 
             const paramName = this.expect(TokenType.IDENTIFIER).value;
@@ -470,7 +872,18 @@ export class Parser {
         this.expect(TokenType.OPERATOR, '=>');
         this.skipNewlines();
 
-        const body = this.parseFunctionBody();
+        const paramFrame = new Set<string>();
+        for (const p of params) {
+            const ident = p.type === 'AssignmentPattern' ? (p as any).left : p;
+            if (ident && ident.name) paramFrame.add(ident.name);
+        }
+        this.paramScopes.push(paramFrame);
+        let body: BlockStatement;
+        try {
+            body = this.parseFunctionBody();
+        } finally {
+            this.paramScopes.pop();
+        }
         const id = new Identifier(name);
         if (returnType) id.returnType = returnType;
 
@@ -508,6 +921,25 @@ export class Parser {
                 paramType = (paramType || '') + this.advance().value;
             }
 
+            // Handle generic type: array<float>, map<string, float>, etc.
+            if (
+                this.peek().type === TokenType.IDENTIFIER &&
+                this.peek(1).type === TokenType.OPERATOR && this.peek(1).value === '<'
+            ) {
+                const genericType = this.parseTypeExpression();
+                paramType = paramType ? paramType + ' ' + genericType : genericType;
+            }
+
+            // Handle array shorthand: int[], float[], line[], label[], etc.
+            if (
+                this.peek().type === TokenType.IDENTIFIER &&
+                this.peek(1).type === TokenType.LBRACKET &&
+                this.peek(2).type === TokenType.RBRACKET
+            ) {
+                const arrayType = this.parseTypeExpression();
+                paramType = paramType ? paramType + ' ' + arrayType : arrayType;
+            }
+
             const paramName = this.expect(TokenType.IDENTIFIER).value;
             const param = new Identifier(paramName);
             if (paramType) param.varType = paramType;
@@ -532,7 +964,18 @@ export class Parser {
         this.expect(TokenType.OPERATOR, '=>');
         this.skipNewlines();
 
-        const body = this.parseFunctionBody();
+        const paramFrame = new Set<string>();
+        for (const p of params) {
+            const ident = p.type === 'AssignmentPattern' ? (p as any).left : p;
+            if (ident && ident.name) paramFrame.add(ident.name);
+        }
+        this.paramScopes.push(paramFrame);
+        let body: BlockStatement;
+        try {
+            body = this.parseFunctionBody();
+        } finally {
+            this.paramScopes.pop();
+        }
         const id = new Identifier(name);
         if (returnType) id.returnType = returnType;
         id.isMethod = true; // Mark as method
@@ -570,15 +1013,43 @@ export class Parser {
             this.advance();
         }
 
-        // Make last statement a return if it's an expression
+        // Make last statement a return if it's an expression.
+        // For if/else/switch as the last statement, recursively add return to each branch.
         if (statements.length > 0) {
-            const last = statements[statements.length - 1];
-            if (last.type === 'ExpressionStatement') {
-                statements[statements.length - 1] = new ReturnStatement(last.expression);
-            }
+            this._addImplicitReturn(statements);
         }
 
         return new BlockStatement(statements);
+    }
+
+    /**
+     * Recursively convert the last expression in a statement list to a ReturnStatement.
+     * Handles if/else chains by adding return to each branch's last expression.
+     */
+    private _addImplicitReturn(statements: any[]): void {
+        const last = statements[statements.length - 1];
+        if (last.type === 'ExpressionStatement') {
+            statements[statements.length - 1] = new ReturnStatement(last.expression);
+        } else if (last.type === 'IfStatement') {
+            this._addImplicitReturnToIf(last);
+        }
+    }
+
+    private _addImplicitReturnToIf(node: any): void {
+        // Add return to the consequent branch
+        if (node.consequent && node.consequent.type === 'BlockStatement' && node.consequent.body.length > 0) {
+            this._addImplicitReturn(node.consequent.body);
+        }
+        // Add return to the alternate branch (else / else if)
+        if (node.alternate) {
+            if (node.alternate.type === 'IfStatement') {
+                // else if — recurse
+                this._addImplicitReturnToIf(node.alternate);
+            } else if (node.alternate.type === 'BlockStatement' && node.alternate.body.length > 0) {
+                // else block
+                this._addImplicitReturn(node.alternate.body);
+            }
+        }
     }
 
     // Parse statement or comma-separated sequence
@@ -617,14 +1088,42 @@ export class Parser {
         }
 
         // Check for typed variable declaration (series float x = ...)
-        if (this.peek().type === TokenType.IDENTIFIER && this.peek(1).type === TokenType.IDENTIFIER) {
-            let offset = 2;
-            while (this.peek(offset).type === TokenType.IDENTIFIER) {
-                offset++;
+        // Also handles: type[] name = ... and type<generic> name = ...
+        // Also handles comma-separated typed declarations: float num = 1.0, float den = 1.0
+        if (this.peek().type === TokenType.IDENTIFIER && this.isTypedVarDeclaration()) {
+            const firstDecl = this.parseTypedVarDeclaration();
+
+            // Check for comma-separated typed declarations on the same line
+            if (this.match(TokenType.COMMA) && this.peek(1).type === TokenType.IDENTIFIER) {
+                const declarations: any[] = [firstDecl];
+                while (this.match(TokenType.COMMA)) {
+                    this.advance(); // consume comma
+                    this.skipNewlines(true);
+                    if (this.peek().type === TokenType.IDENTIFIER && this.isTypedVarDeclaration()) {
+                        declarations.push(this.parseTypedVarDeclaration());
+                    } else {
+                        // Not a typed declaration after comma — parse as a regular statement
+                        const expr = this.parseExpression();
+                        if (this.match(TokenType.OPERATOR)) {
+                            const op = this.peek().value;
+                            if (['=', ':='].includes(op)) {
+                                this.advance();
+                                this.skipNewlines(true);
+                                const right = this.parseExpression();
+                                if (op === '=' && expr.type === 'Identifier') {
+                                    declarations.push(new VariableDeclaration([new VariableDeclarator(expr, right)], VariableDeclarationKind.LET));
+                                } else {
+                                    declarations.push(new ExpressionStatement(new AssignmentExpression(op === ':=' ? '=' : op, expr, right)));
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                return declarations; // Return array of statements
             }
-            if (this.peek(offset).type === TokenType.OPERATOR && this.peek(offset).value === '=') {
-                return this.parseTypedVarDeclaration();
-            }
+
+            return firstDecl;
         }
 
         // Try to parse as sequence (assignment, assignment, ..., expression)
@@ -708,6 +1207,9 @@ export class Parser {
         const consequent = this.parseBlock();
         let alternate = null;
 
+        // Skip newlines/comments between block end and potential 'else'
+        this.skipNewlines();
+
         if (this.match(TokenType.KEYWORD, 'else')) {
             this.advance();
             this.skipNewlines();
@@ -787,12 +1289,35 @@ export class Parser {
             this.skipNewlines();
             const body = this.parseBlock();
 
-            // Build for loop: for (let i = start; i <= end; i++)
+            // Build for loop with runtime direction detection.
+            // Pine Script: `for i = start to end [by step]`
+            // Direction is determined at runtime (start <= end → increment, else decrement).
+            // Generated: for (let i = start; start <= end ? i <= end : i >= end; start <= end ? i++ : i--)
             const init = new VariableDeclaration([new VariableDeclarator(loopVar, start)], VariableDeclarationKind.LET);
 
-            const test = new BinaryExpression('<=', loopVar, end);
+            const directionCheck = new BinaryExpression('<=', start, end);
+            const test = new ConditionalExpression(
+                directionCheck,
+                new BinaryExpression('<=', loopVar, end),
+                new BinaryExpression('>=', loopVar, end)
+            );
 
-            const update = step ? new AssignmentExpression('+=', loopVar, step) : new UpdateExpression('++', loopVar);
+            let update;
+            if (step) {
+                // with step: start <= end ? i += step : i -= step
+                update = new ConditionalExpression(
+                    directionCheck,
+                    new AssignmentExpression('+=', loopVar, step),
+                    new AssignmentExpression('-=', loopVar, step)
+                );
+            } else {
+                // no step: start <= end ? i++ : i--
+                update = new ConditionalExpression(
+                    directionCheck,
+                    new UpdateExpression('++', loopVar),
+                    new UpdateExpression('--', loopVar)
+                );
+            }
 
             return new ForStatement(init, test, update, body);
         }
@@ -897,7 +1422,11 @@ export class Parser {
 
         while (!this.match(TokenType.RBRACKET)) {
             this.skipNewlines();
-            elements.push(new Identifier(this.expect(TokenType.IDENTIFIER).value));
+            let name = this.expect(TokenType.IDENTIFIER).value;
+            if (this.functionNames.has(name)) {
+                name = name + '_var';
+            }
+            elements.push(new Identifier(name));
 
             if (this.match(TokenType.COMMA)) {
                 this.advance();
@@ -944,7 +1473,7 @@ export class Parser {
     parseLogicalOr() {
         let left = this.parseLogicalAnd();
 
-        while (this.matchEx(TokenType.KEYWORD, 'or', true) || (this.matchEx(TokenType.OPERATOR, null, true) && this.peek().value === '||')) {
+        while (this.matchEx(TokenType.KEYWORD, 'or', true) || this.peekOperatorEx(['||'])) {
             this.advance();
             this.skipNewlines(true);
             const right = this.parseLogicalAnd();
@@ -957,9 +1486,9 @@ export class Parser {
     parseLogicalAnd() {
         let left = this.parseEquality();
 
-        while (this.matchEx(TokenType.KEYWORD, 'and', true) || (this.matchEx(TokenType.OPERATOR, null, true) && this.peek().value === '&&')) {
+        while (this.matchEx(TokenType.KEYWORD, 'and', true) || this.peekOperatorEx(['&&'])) {
             this.advance();
-            this.skipNewlines();
+            this.skipNewlines(true);
             const right = this.parseEquality();
             left = new BinaryExpression('&&', left, right);
         }
@@ -970,11 +1499,8 @@ export class Parser {
     parseEquality() {
         let left = this.parseComparison();
 
-        while (this.matchEx(TokenType.OPERATOR, null, true)) {
-            const op = this.peek().value;
-            if (!['==', '!='].includes(op)) break;
-
-            this.advance();
+        while (this.peekOperatorEx(['==', '!='])) {
+            const op = this.advance().value;
             this.skipNewlines(true);
             const right = this.parseComparison();
             left = new BinaryExpression(op, left, right);
@@ -986,12 +1512,9 @@ export class Parser {
     parseComparison() {
         let left = this.parseAdditive();
 
-        while (this.matchEx(TokenType.OPERATOR, null, true)) {
-            const op = this.peek().value;
-            if (!['<', '>', '<=', '>='].includes(op)) break;
-
-            this.advance();
-            this.skipNewlines();
+        while (this.peekOperatorEx(['<', '>', '<=', '>='])) {
+            const op = this.advance().value;
+            this.skipNewlines(true);
             const right = this.parseAdditive();
             left = new BinaryExpression(op, left, right);
         }
@@ -1002,11 +1525,8 @@ export class Parser {
     parseAdditive() {
         let left = this.parseMultiplicative();
 
-        while (this.matchEx(TokenType.OPERATOR, null, true)) {
-            const op = this.peek().value;
-            if (!['+', '-'].includes(op)) break;
-
-            this.advance();
+        while (this.peekOperatorEx(['+', '-'])) {
+            const op = this.advance().value;
             this.skipNewlines(true);
             const right = this.parseMultiplicative();
             left = new BinaryExpression(op, left, right);
@@ -1018,11 +1538,8 @@ export class Parser {
     parseMultiplicative() {
         let left = this.parseUnary();
 
-        while (this.matchEx(TokenType.OPERATOR, null, true)) {
-            const op = this.peek().value;
-            if (!['*', '/', '%'].includes(op)) break;
-
-            this.advance();
+        while (this.peekOperatorEx(['*', '/', '%'])) {
+            const op = this.advance().value;
             this.skipNewlines(true);
             const right = this.parseUnary();
             left = new BinaryExpression(op, left, right);
@@ -1058,17 +1575,25 @@ export class Parser {
             // We'll skip them in specific contexts where they're allowed (like after `.`)
 
             // Generic type parameters followed by call: array.new<float>(...)
-            // We need to skip the generic part and parse the call
+            // Capture the generic type and, for known types, rewrite
+            // array.new<float> → array.new_float (same for matrix, etc.)
             if (this.match(TokenType.OPERATOR, '<')) {
                 // Save position in case this isn't a generic
                 const saved = this.pos;
 
-                // Try to parse as generic type
+                // Try to parse as generic type, capturing type name
                 this.advance(); // consume <
                 let depth = 1;
                 let isGeneric = true;
+                let genericType = '';
 
-                // Skip until matching >
+                // Known Pine types that have dedicated new_TYPE methods
+                const KNOWN_GENERIC_TYPES = new Set([
+                    'float', 'int', 'string', 'bool', 'color',
+                    'line', 'label', 'box', 'linefill', 'table',
+                ]);
+
+                // Skip until matching >, capturing type identifiers
                 while (depth > 0 && !this.match(TokenType.EOF)) {
                     if (this.match(TokenType.OPERATOR, '<')) {
                         depth++;
@@ -1076,7 +1601,11 @@ export class Parser {
                     } else if (this.match(TokenType.OPERATOR, '>')) {
                         depth--;
                         this.advance();
-                    } else if (this.match(TokenType.IDENTIFIER) || this.match(TokenType.COMMA)) {
+                    } else if (this.match(TokenType.IDENTIFIER) || this.match(TokenType.COMMA) || this.match(TokenType.DOT)) {
+                        // Capture only top-level, simple type names (depth === 1)
+                        if (depth === 1 && this.match(TokenType.IDENTIFIER) && genericType === '') {
+                            genericType = this.peek().value;
+                        }
                         this.advance();
                     } else {
                         // Not a generic type, restore position
@@ -1084,6 +1613,15 @@ export class Parser {
                         this.pos = saved;
                         break;
                     }
+                }
+
+                // For known types, rewrite callee: array.new<float> → array.new_float
+                // Only for array/matrix (not map, which uses map.new<K,V> with two type params)
+                if (isGeneric && expr.type === 'MemberExpression'
+                    && expr.property.name === 'new'
+                    && (expr.object.name === 'array' || expr.object.name === 'matrix')
+                    && KNOWN_GENERIC_TYPES.has(genericType)) {
+                    expr.property = new Identifier('new_' + genericType);
                 }
 
                 // If we successfully parsed generic and next is (, parse call
@@ -1106,11 +1644,24 @@ export class Parser {
             else if (this.match(TokenType.DOT)) {
                 this.advance();
                 this.skipNewlines(); // Allow method chaining across lines
-                const property = this.expect(TokenType.IDENTIFIER).value;
-                expr = new MemberExpression(expr, new Identifier(property), false);
+                // Accept both IDENTIFIER and KEYWORD after DOT — keywords like
+                // 'type' can be valid property names (e.g., syminfo.type)
+                const propToken = this.peek();
+                if (propToken.type !== TokenType.IDENTIFIER && propToken.type !== TokenType.KEYWORD) {
+                    throw new Error(`Expected property name but got ${propToken.type} at ${propToken.line}:${propToken.column}`);
+                }
+                this.advance();
+                expr = new MemberExpression(expr, new Identifier(propToken.value), false);
             }
             // Index/history operator
             else if (this.match(TokenType.LBRACKET)) {
+                // If this looks like tuple destructuring [a, b, c] = ..., it's a new
+                // statement, not a postfix index on the previous expression.
+                // This happens after block expressions like switch where DEDENT is
+                // immediately followed by LBRACKET with no intervening NEWLINE.
+                if (this.isTupleDestructuring()) {
+                    break;
+                }
                 this.advance();
                 this.skipNewlines();
                 const index = this.parseExpression();
@@ -1187,7 +1738,15 @@ export class Parser {
         // Identifier
         if (this.match(TokenType.IDENTIFIER)) {
             const id = this.advance();
-            return new Identifier(id.value);
+            let name = id.value;
+            if (
+                this.functionNames.has(name) &&
+                this.peek().type !== TokenType.LPAREN &&
+                !this.isCurrentFunctionParam(name)
+            ) {
+                name = name + '_var';
+            }
+            return new Identifier(name);
         }
 
         // Array literal
@@ -1213,6 +1772,16 @@ export class Parser {
         // Switch expression
         if (this.match(TokenType.KEYWORD, 'switch')) {
             return this.parseSwitchExpression();
+        }
+
+        // For expression (for loop as expression — returns last evaluated value)
+        if (this.match(TokenType.KEYWORD, 'for')) {
+            return this.parseForExpression();
+        }
+
+        // While expression (while loop as expression — returns last evaluated value)
+        if (this.match(TokenType.KEYWORD, 'while')) {
+            return this.parseWhileExpression();
         }
 
         throw new Error(`Unexpected token ${token.type} '${token.value}' at ${token.line}:${token.column}`);
@@ -1360,8 +1929,14 @@ export class Parser {
                 }
                 this.advance(); // DEDENT
             } else {
-                // Single expression
-                consequentStmts.push(new ExpressionStatement(this.parseExpression()));
+                // Single line: may be an expression or a statement (e.g., col := value)
+                // Disable line continuation to prevent the expression parser from
+                // absorbing the next case's negative test value (e.g., -1 =>) as
+                // binary subtraction from the current case's body.
+                this.noLineContinuation = true;
+                const stmt = this.parseStatement();
+                this.noLineContinuation = false;
+                if (stmt) consequentStmts.push(stmt);
             }
 
             // Extract the value expression from statements (for backwards compatibility)
@@ -1373,6 +1948,24 @@ export class Parser {
 
         this.advance(); // DEDENT
         return new SwitchExpression(discriminant, cases);
+    }
+
+    // Parse for loop used as expression (returns last evaluated value)
+    // Example: _result = for i = 0 to 4 \n close[i]
+    parseForExpression() {
+        const forStmt = this.parseForStatement();
+        // Mark as expression-returning
+        (forStmt as any).isExpression = true;
+        return forStmt;
+    }
+
+    // Parse while loop used as expression (returns last evaluated value)
+    // Example: _result = while condition \n expr
+    parseWhileExpression() {
+        const whileStmt = this.parseWhileStatement();
+        // Mark as expression-returning
+        (whileStmt as any).isExpression = true;
+        return whileStmt;
     }
 
     getBlockValue(statements) {

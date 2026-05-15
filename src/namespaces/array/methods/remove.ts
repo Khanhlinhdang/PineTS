@@ -4,10 +4,15 @@ import { PineArrayObject } from '../PineArrayObject';
 
 export function remove(context: any) {
     return (id: PineArrayObject, index: number): any => {
-        if (index >= 0 && index < id.array.length) {
-            return id.array.splice(index, 1)[0];
+        // Pine Script v6: negative indices count backwards from the end.
+        if (index < 0) index = id.array.length + index;
+        if (index < 0 || index >= id.array.length) {
+            context.warn(
+                `Index ${index} is out of bounds, array size is ${id.array.length}.`,
+                'array.remove'
+            );
+            return NaN;
         }
-        return context.NA;
+        return id.array.splice(index, 1)[0];
     };
 }
-

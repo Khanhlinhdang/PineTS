@@ -1,11 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2025 Alaa-eddine KADDOURI
 import { transpile } from '@pinets/transpiler/index';
+import { VIEWPORT_DEPENDENT_BUILTINS } from '@pinets/transpiler/settings';
 import { IProvider, ISymbolInfo } from './marketData/IProvider';
 import { Context } from './Context.class';
 import { Series } from './Series';
 import { Indicator } from './Indicator';
 import { processStrategyOrders } from './namespaces/strategy/utils';
+
+// ── Timeframe duration utility ──────────────────────────────────────
+//prettier-ignore
+const TIMEFRAME_DURATION_MS: Record<string, number> = {
+    '1': 60_000, '3': 180_000, '5': 300_000, '15': 900_000, '30': 1_800_000,
+    '60': 3_600_000, '120': 7_200_000, '180': 10_800_000, '240': 14_400_000,
+    '4H': 14_400_000, '1D': 86_400_000, 'D': 86_400_000,
+    '1W': 604_800_000, 'W': 604_800_000,
+    '1M': 30 * 86_400_000, 'M': 30 * 86_400_000,
+};
+function getTimeframeDurationMs(timeframe: string | undefined): number {
+    if (!timeframe) return 86_400_000; // default to 1D when timeframe is unknown
+    return TIMEFRAME_DURATION_MS[timeframe] ?? TIMEFRAME_DURATION_MS[timeframe.toUpperCase()] ?? 86_400_000;
+}
 
 /**
  * This class is a wrapper for the Pine Script language, it allows to run Pine Script code in a JavaScript environment
@@ -56,6 +71,137 @@ export class PineTS {
     }
 
     private _syminfo: ISymbolInfo;
+    private _chartTimezone: string | null = null;
+
+    /**
+     * Set the chart display timezone (like TradingView's timezone picker).
+     * This only affects log timestamp formatting — it does NOT change the timezone
+     * used by computation functions (timestamp(), dayofmonth, hour, etc.), which
+     * always use the exchange timezone from syminfo.timezone.
+     * @param timezone IANA timezone name (e.g. 'America/New_York'), UTC offset ('UTC+5'), or 'UTC'
+     */
+    public setTimezone(timezone: string) {
+        this._chartTimezone = timezone;
+    }
+
+    private _maxLoops: number = 500000;
+
+    /**
+     * Set the maximum number of iterations allowed per loop.
+     * Mirrors TradingView's internal loop protection. If a for/while loop
+     * exceeds this limit, a runtime error is thrown.
+     * @param maxLoops Maximum iterations per loop (default: 500000)
+     */
+    public setMaxLoops(maxLoops: number) {
+        this._maxLoops = maxLoops;
+    }
+
+    private _alertMode: 'realtime' | 'all' = 'realtime';
+
+    /**
+     * Set alert mode.
+     * - 'realtime' (default): alerts only fire on the last (realtime) bar,
+     *   matching TradingView behavior.
+     * - 'all': alerts fire on every bar, useful for backtesting alert strategies.
+     * @param mode Alert firing mode
+     */
+    public setAlertMode(mode: 'realtime' | 'all') {
+        this._alertMode = mode;
+    }
+
+    // ── Visible-range / host environment ────────────────────────────────
+    // Values come from the host (UI). When unset, Pine built-ins like
+    // `chart.left_visible_bar_time` fall back to marketData-derived defaults
+    // (first/last loaded bar's openTime).
+    private _viewportLeft: number | undefined = undefined;
+    private _viewportRight: number | undefined = undefined;
+
+    // Set by _transpileCode() via static analysis of the transpiled output.
+    // True iff the script references any built-in in VIEWPORT_DEPENDENT_BUILTINS.
+    // Consumers should check this before re-running on viewport changes — non-
+    // viewport-dependent scripts produce identical output regardless of viewport.
+    private _usesVisibleRange: boolean = false;
+
+    // Snapshot of viewport at the time of the last update()-cached run, used to
+    // decide whether an update() call can return the cached result.
+    private _lastRunViewport: { left?: number; right?: number } = {};
+    private _lastResult: Context | null = null;
+    private _lastPineTSCode: Indicator | Function | String | null = null;
+
+    /**
+     * Set the visible range of bars from the host (e.g. chart UI viewport).
+     * Affects `chart.left_visible_bar_time` and `chart.right_visible_bar_time`.
+     * Defaults derive from `marketData[0]/[last].openTime` if never called.
+     *
+     * The setter only stores values; it does NOT trigger a re-run. Call
+     * `update()` afterwards to apply the change. For scripts that don't
+     * reference visible-range built-ins, `update()` is a no-op.
+     *
+     * @param left  openTime of the leftmost visible bar
+     * @param right openTime of the rightmost visible bar
+     */
+    public setVisibleRange(left: number, right: number): void {
+        this._viewportLeft = left;
+        this._viewportRight = right;
+    }
+
+    /**
+     * Whether the loaded script references any visible-range built-in
+     * (e.g. `chart.left_visible_bar_time`). Detected statically during
+     * transpile. Consumers fanning viewport changes across many indicators
+     * should skip non-tagged instances to avoid unnecessary re-runs.
+     */
+    public usesVisibleRange(): boolean {
+        return this._usesVisibleRange;
+    }
+
+    /** Current viewport left (undefined if setter never called). */
+    public get visibleRangeLeft(): number | undefined {
+        return this._viewportLeft;
+    }
+
+    /** Current viewport right (undefined if setter never called). */
+    public get visibleRangeRight(): number | undefined {
+        return this._viewportRight;
+    }
+
+    /**
+     * Smart re-run: executes `run()` only if a re-run is actually needed.
+     *
+     * - First call: behaves like `run()` (always executes).
+     * - Subsequent calls: returns the cached previous result UNLESS the script
+     *   is viewport-dependent (`usesVisibleRange()`) AND the viewport has
+     *   changed since the last cached run.
+     *
+     * The typical pattern for a chart consumer with multiple indicators:
+     *
+     *     // user pans the chart
+     *     for (const p of indicators) {
+     *         p.setVisibleRange(left, right);
+     *         await p.update(code);   // no-op for non-viewport indicators
+     *     }
+     *
+     * The pineTSCode argument is optional after the first call — the same code
+     * is reused. Pass it again only when the script source itself has changed.
+     */
+    public async update(pineTSCode?: Indicator | Function | String): Promise<Context> {
+        const codeToRun = pineTSCode ?? this._lastPineTSCode;
+        if (!codeToRun) {
+            throw new Error('pine.update(): pineTSCode is required on the first call.');
+        }
+
+        const isFirstRun = this._lastResult === null;
+        const viewportChanged = this._viewportLeft !== this._lastRunViewport.left
+            || this._viewportRight !== this._lastRunViewport.right;
+
+        const needsRun = isFirstRun || (this._usesVisibleRange && viewportChanged);
+        if (!needsRun) return this._lastResult as Context;
+
+        this._lastPineTSCode = codeToRun;
+        this._lastRunViewport = { left: this._viewportLeft, right: this._viewportRight };
+        this._lastResult = (await this.run(codeToRun)) as Context;
+        return this._lastResult;
+    }
 
     constructor(
         private source: IProvider | any[],
@@ -63,7 +209,7 @@ export class PineTS {
         private timeframe?: string,
         private limit?: number,
         private sDate?: number,
-        private eDate?: number
+        private eDate?: number,
     ) {
         this._readyPromise = new Promise((resolve) => {
             this.loadMarketData(source, tickerId, timeframe, limit, sDate, eDate).then((data) => {
@@ -82,7 +228,13 @@ export class PineTS {
                 const _ohlc4 = marketData.map((d) => (d.high + d.low + d.open + d.close) / 4);
                 const _hlcc4 = marketData.map((d) => (d.high + d.low + d.close + d.close) / 4);
                 const _openTime = marketData.map((d) => d.openTime);
-                const _closeTime = marketData.map((d) => d.closeTime);
+                // Providers should supply closeTime as session close time (TV convention).
+                // Safety-net for array-based data or providers that omit closeTime:
+                // estimate as openTime + timeframe duration (accurate for 24/7 crypto).
+                const tfDurationMs = getTimeframeDurationMs(this.timeframe);
+                const _closeTime = marketData.map((d) =>
+                    d.closeTime != null ? d.closeTime : d.openTime + tfDurationMs
+                );
 
                 this.open = _open;
                 this.close = _close;
@@ -189,8 +341,8 @@ export class PineTS {
      */
     public stream(
         pineTSCode: Indicator | Function | String,
-        options: { pageSize?: number; live?: boolean; interval?: number } = {}
-    ): { on: (event: 'data' | 'error', callback: Function) => void; stop: () => void } {
+        options: { pageSize?: number; live?: boolean; interval?: number } = {},
+    ): { on: (event: 'data' | 'error' | 'warning' | 'alert', callback: Function) => void; stop: () => void } {
         const { live = true, interval = 1000 } = options;
         const pageSize = options.pageSize || this.data.length; // Default pageSize to full data if not provided
 
@@ -204,7 +356,7 @@ export class PineTS {
             code = pineTSCode;
         }
 
-        const listeners: { [key: string]: Function[] } = { data: [], error: [] };
+        const listeners: { [key: string]: Function[] } = { data: [], error: [], warning: [], alert: [] };
         let stopped = false;
 
         const emit = (event: string, ...args: any[]) => {
@@ -213,7 +365,7 @@ export class PineTS {
             }
         };
 
-        const on = (event: 'data' | 'error', callback: Function) => {
+        const on = (event: 'data' | 'error' | 'warning' | 'alert', callback: Function) => {
             if (!listeners[event]) listeners[event] = [];
             listeners[event].push(callback);
         };
@@ -225,8 +377,14 @@ export class PineTS {
         // Start execution
         (async () => {
             try {
+                // When live streaming is requested with an eDate, clamp eDate to now
+                // to avoid gaps between historical data end and live data start
+                if (live && typeof this.eDate !== 'undefined') {
+                    this.eDate = Math.max(this.eDate, Date.now());
+                }
+
                 // Determine if live streaming is possible and requested
-                const isLiveCapable = typeof this.eDate === 'undefined' && !Array.isArray(this.source);
+                const isLiveCapable = !Array.isArray(this.source);
                 const enableLiveStream = isLiveCapable && live;
 
                 // Pass undefined for periods to include all data
@@ -247,13 +405,34 @@ export class PineTS {
 
                     emit('data', ctx);
 
+                    // Emit any NEW runtime warnings accumulated since last tick
+                    if (ctx.warnings && ctx.warnings.length > 0) {
+                        for (const w of ctx.warnings) {
+                            emit('warning', w);
+                        }
+                        // Clear so next tick only emits newly added warnings
+                        ctx.warnings.length = 0;
+                    }
+
+                    // Emit any NEW alert events accumulated since last tick
+                    if (ctx.alerts && ctx.alerts.length > 0) {
+                        for (const a of ctx.alerts) {
+                            emit('alert', a);
+                        }
+                        // Clear so next tick only emits newly added alerts
+                        ctx.alerts.length = 0;
+                    }
+
                     // If live streaming is enabled, wait for the interval before fetching next data
                     // This prevents hammering the API when new data is available immediately or in rapid succession
                     if (enableLiveStream && !stopped) {
                         const currentCandle = ctx.marketData[ctx.idx];
                         const isHistorical = currentCandle && currentCandle.closeTime < Date.now();
+                        const isLastBar = ctx.idx >= ctx.marketData.length - 1;
 
-                        if (!isHistorical) {
+                        // Always throttle when on the last bar (caught up to current data).
+                        // For mid-stream historical pages, skip the delay so initial load is fast.
+                        if (!isHistorical || isLastBar) {
                             await new Promise((resolve) => setTimeout(resolve, interval));
                         }
                     }
@@ -270,12 +449,43 @@ export class PineTS {
      * Run the script completely and return the final context (backward compatible behavior)
      * @private
      */
+    /**
+     * Run an already-transpiled PineTS function in this instance — no
+     * additional transpile/parse pass. Used by `request.security_lower_tf`'s
+     * slow path to execute the slice produced at primary-transpile time
+     * (a truncated body containing only the prefix up to the call). The
+     * caller is responsible for ensuring `transpiledFn` was produced by
+     * this transpiler against the same source — calling this with an
+     * arbitrary function is unsafe.
+     */
+    public async runPretranspiled(transpiledFn: Function, inputs: Record<string, any> = {}, periods?: number): Promise<Context> {
+        await this.ready();
+        if (!periods) periods = this.data.length;
+
+        const context = this._initializeContext(null as any, inputs, this._isSecondaryContext);
+        this._transpiledCode = transpiledFn;
+        // Preserve slice attribution on the context so any nested LTF
+        // request inside the slice can keep using the same map.
+        const slices = (transpiledFn as any)._ltfSlices;
+        if (slices) (context as any)._ltfTruncatedBodies = slices;
+
+        await this._executeIterations(context, this._transpiledCode, this.data.length - periods, this.data.length);
+
+        return context;
+    }
+
     private async _runComplete(pineTSCode: Function | String, inputs: Record<string, any>, periods?: number): Promise<Context> {
         await this.ready();
         if (!periods) periods = this.data.length;
 
         const context = this._initializeContext(pineTSCode, inputs, this._isSecondaryContext);
         this._transpiledCode = this._transpileCode(pineTSCode);
+        // Propagate transpile-time slices (one per request.security_lower_tf
+        // call site) onto the Context so the slow path of the LTF runtime
+        // can pick the right truncated body to run in the secondary
+        // instead of the FULL user script.
+        const slices = (this._transpiledCode as any)._ltfSlices;
+        if (slices) (context as any)._ltfTruncatedBodies = slices;
 
         await this._executeIterations(context, this._transpiledCode, this.data.length - periods, this.data.length);
 
@@ -293,16 +503,19 @@ export class PineTS {
         inputs: Record<string, any>,
         periods: number | undefined,
         pageSize: number,
-        enableLiveStream: boolean = false
+        enableLiveStream: boolean = false,
     ): AsyncGenerator<Context> {
         await this.ready();
         if (!periods) periods = this.data.length;
 
         const context = this._initializeContext(pineTSCode, inputs, this._isSecondaryContext);
         this._transpiledCode = this._transpileCode(pineTSCode);
+        const slices = (this._transpiledCode as any)._ltfSlices;
+        if (slices) (context as any)._ltfTruncatedBodies = slices;
 
         const startIdx = this.data.length - periods;
         let processedUpToIdx = startIdx; // Track what we've fully processed
+        let varSnapshot: any = null; // Snapshot of var state before last bar processing
 
         // Unified loop handles both historical and live data
         while (true) {
@@ -314,7 +527,23 @@ export class PineTS {
                 const toProcess = Math.min(unprocessedCount, pageSize);
                 const previousResultLength = this._getResultLength(context.result);
 
-                await this._executeIterations(context, this._transpiledCode, processedUpToIdx, processedUpToIdx + toProcess);
+                // If this batch includes the last bar AND live streaming is enabled,
+                // snapshot the state BEFORE processing the last bar so we can restore
+                // it cleanly on streaming re-execution.
+                const batchEnd = processedUpToIdx + toProcess;
+                if (enableLiveStream && batchEnd >= availableData && toProcess > 1) {
+                    // Process all bars except the last one
+                    await this._executeIterations(context, this._transpiledCode, processedUpToIdx, batchEnd - 1);
+                    // Snapshot state before the last bar
+                    varSnapshot = this._snapshotVarState(context);
+                    // Now process the last bar
+                    await this._executeIterations(context, this._transpiledCode, batchEnd - 1, batchEnd);
+                } else if (enableLiveStream && batchEnd >= availableData && toProcess === 1) {
+                    // Only 1 bar to process (the last one) — snapshot is already set from previous batch
+                    await this._executeIterations(context, this._transpiledCode, processedUpToIdx, batchEnd);
+                } else {
+                    await this._executeIterations(context, this._transpiledCode, processedUpToIdx, batchEnd);
+                }
 
                 processedUpToIdx += toProcess;
 
@@ -324,6 +553,8 @@ export class PineTS {
                 continue;
             }
 
+            // UNUSED — snapshot is now taken in #1 before processing the last bar
+
             // #2: Caught up to current data (processedUpToIdx === this.data.length)
 
             // If not live streaming, we're done
@@ -332,7 +563,10 @@ export class PineTS {
             }
 
             // #3: Fetch new data, always starting from last candle's openTime
+            // Throttle: minimum 1 second between API fetches to prevent hammering
+            const fetchStart = Date.now();
             const { newCandles, updatedLastCandle } = await this._updateMarketData();
+            const fetchDuration = Date.now() - fetchStart;
 
             if (newCandles === 0 && !updatedLastCandle) {
                 // No new data available, yield null to signal caller
@@ -340,12 +574,64 @@ export class PineTS {
                 continue;
             }
 
-            // #4: Always recalculate last candle + new ones
-            // Remove last result (will be recalculated with fresh data)
-            this._removeLastResult(context);
+            // If only the last candle was updated (no new bars), throttle to avoid
+            // rapid-fire fetching when the market is closed or candle is still forming
+            if (newCandles === 0 && updatedLastCandle && fetchDuration < 1000) {
+                await new Promise((resolve) => setTimeout(resolve, 1000 - fetchDuration));
+            }
+
+            // #4: Data changed — bump version so secondary contexts know to refresh
+            context.dataVersion++;
+
+            // Update context.length so barstate.islast (which checks
+            // context.idx === context.length - 1) works correctly for new bars.
+            // Without this, barstate.islast stays false after new candles arrive,
+            // and any `if barstate.islast` drawing logic never executes.
+            context.length = this.data.length;
+
+            // Restore variable state to the snapshot (before last bar was processed).
+            // This is more reliable than _removeLastResult's pop-based approach for
+            // var variables, which can drift when re-executing modifies values in-place.
+            // _restoreVarState handles var/let/const/params Series truncation,
+            // so we skip _removeLastResult (which would double-pop).
+            this._restoreVarState(context, varSnapshot);
+
+            // Still need to remove last result and market data series entries
+            // (these are not covered by _restoreVarState)
+            if (Array.isArray(context.result)) {
+                context.result.pop();
+            } else if (typeof context.result === 'object' && context.result !== null) {
+                for (let key in context.result) {
+                    if (Array.isArray(context.result[key])) {
+                        context.result[key].pop();
+                    }
+                }
+            }
+            // Pop market data series (close, open, high, low, volume, etc.)
+            context.data.close.data.pop();
+            context.data.open.data.pop();
+            context.data.high.data.pop();
+            context.data.low.data.pop();
+            context.data.volume.data.pop();
+            context.data.hl2.data.pop();
+            context.data.hlc3.data.pop();
+            context.data.ohlc4.data.pop();
+            context.data.hlcc4.data.pop();
+            context.data.openTime.data.pop();
+            if (context.data.closeTime) context.data.closeTime.data.pop();
+            context.data.bar_index.data.pop();
 
             // Step back one position to reprocess last candle
             processedUpToIdx = this.data.length - (newCandles + 1);
+
+            // Roll back drawing objects created during the previous processing of
+            // these bars so they don't accumulate on each streaming tick.
+            context.rollbackDrawings(processedUpToIdx);
+
+            // If new candles arrived, invalidate snapshot (will re-snapshot after next full process)
+            if (newCandles > 0) {
+                varSnapshot = null;
+            }
 
             // Next iteration of loop will process from updated position (#1)
 
@@ -409,6 +695,12 @@ export class PineTS {
 
         // Copy plots metadata
         pageContext.plots = { ...fullContext.plots };
+
+        // Copy runtime warnings
+        pageContext.warnings = fullContext.warnings;
+
+        // Copy alert events
+        pageContext.alerts = fullContext.alerts;
 
         return pageContext;
     }
@@ -505,6 +797,29 @@ export class PineTS {
     }
 
     /**
+     * Update the secondary context's tail with fresh market data.
+     * Mirrors the streaming update logic in _runPaginated:
+     * fetches new/updated candles, rolls back the last result, and re-executes
+     * only the affected bars.
+     * @param context - The cached secondary context to update
+     * @returns true if data was updated, false if no changes
+     */
+    public async updateTail(context: Context): Promise<boolean> {
+        // Guard: skip if no data (e.g. secondary context failed to load from provider)
+        if (this.data.length === 0 || Array.isArray(this.source)) return false;
+
+        const { newCandles, updatedLastCandle } = await this._updateMarketData();
+        if (newCandles === 0 && !updatedLastCandle) return false;
+
+        this._removeLastResult(context);
+        context.length = this.data.length;
+        const processFrom = this.data.length - (newCandles + 1);
+        context.rollbackDrawings(processFrom);
+        await this._executeIterations(context, this._transpiledCode as Function, processFrom, this.data.length);
+        return true;
+    }
+
+    /**
      * Remove the last result from context (for updating an open candle)
      * @private
      */
@@ -533,6 +848,7 @@ export class PineTS {
         if (context.data.closeTime) {
             context.data.closeTime.data.pop();
         }
+        context.data.bar_index.data.pop();
 
         // Fix: Rollback context variables (let, var, const, params)
         const contextVarNames = ['const', 'var', 'let', 'params'];
@@ -557,6 +873,102 @@ export class PineTS {
     }
 
     /**
+     * Snapshot the var/let/const/params Series state for streaming rollback.
+     * Captures the data array length and last value for each variable so we can
+     * restore to this exact state before re-executing the last bar.
+     *
+     * PERF NOTE: This currently snapshots ALL scopes (const, var, let, params).
+     * In practice, only `var` variables need snapshot/restore because:
+     *   - `let` variables are re-initialized every bar via $.init() — they reset naturally
+     *   - `const` variables are set once and never modified
+     *   - `params` are function parameters, not modified across bars
+     * Only `var` variables persist and get modified in-place by $.set() (e.g. n += 1),
+     * which causes drift on streaming re-execution.
+     * If this becomes a bottleneck, narrow to `['var']` only.
+     *
+     * An even lighter alternative: make $.set() on var Series append-only (push
+     * instead of in-place modify). Then the existing pop-based _removeLastResult
+     * would correctly revert var state without any snapshot. This would require
+     * changes to the core Series/set mechanics.
+     *
+     * @private
+     */
+    private _snapshotVarState(context: Context): any {
+        const contextVarNames = ['const', 'var', 'let', 'params'];
+        const snapshot: any = { main: {}, lctx: [] };
+
+        const snapContainer = (container: any) => {
+            const snap: any = {};
+            for (const ctxVarName of contextVarNames) {
+                if (!container[ctxVarName]) continue;
+                snap[ctxVarName] = {};
+                for (const key in container[ctxVarName]) {
+                    const item = container[ctxVarName][key];
+                    if (item instanceof Series) {
+                        // Save length AND the last value so we can restore both
+                        const len = item.data.length;
+                        const lastVal = len > 0 ? item.data[len - 1] : undefined;
+                        snap[ctxVarName][key] = { len, lastVal };
+                    }
+                }
+            }
+            return snap;
+        };
+
+        snapshot.main = snapContainer(context);
+        if (context.lctx) {
+            const lctxSnaps: any[] = [];
+            context.lctx.forEach((lctx: any) => lctxSnaps.push(snapContainer(lctx)));
+            snapshot.lctx = lctxSnaps;
+        }
+
+        // Also snapshot result and data array lengths
+        snapshot.resultLength = this._getResultLength(context.result);
+        snapshot.dataLength = context.data.close?.data?.length ?? 0;
+
+        return snapshot;
+    }
+
+    /**
+     * Restore var/let/const/params Series state from a snapshot.
+     * Truncates each Series' data array back to the snapshotted length.
+     * @private
+     */
+    private _restoreVarState(context: Context, snapshot: any): void {
+        if (!snapshot) return;
+        const contextVarNames = ['const', 'var', 'let', 'params'];
+
+        const restoreContainer = (container: any, snap: any) => {
+            for (const ctxVarName of contextVarNames) {
+                if (!snap[ctxVarName] || !container[ctxVarName]) continue;
+                for (const key in snap[ctxVarName]) {
+                    const item = container[ctxVarName][key];
+                    const snapInfo = snap[ctxVarName][key];
+                    if (item instanceof Series && snapInfo && typeof snapInfo.len === 'number') {
+                        // Truncate back to snapshot length
+                        if (item.data.length > snapInfo.len) {
+                            item.data.length = snapInfo.len;
+                        }
+                        // Restore the last value (which may have been modified in-place)
+                        if (snapInfo.len > 0 && snapInfo.lastVal !== undefined) {
+                            item.data[snapInfo.len - 1] = snapInfo.lastVal;
+                        }
+                    }
+                }
+            }
+        };
+
+        restoreContainer(context, snapshot.main);
+        if (context.lctx && snapshot.lctx) {
+            let i = 0;
+            context.lctx.forEach((lctx: any) => {
+                if (snapshot.lctx[i]) restoreContainer(lctx, snapshot.lctx[i]);
+                i++;
+            });
+        }
+    }
+
+    /**
      * Initialize a new context for running Pine Script code
      * @private
      */
@@ -573,6 +985,19 @@ export class PineTS {
         });
 
         context.pine.syminfo = this._syminfo;
+        // Chart timezone only affects display formatting (log timestamps).
+        // It does NOT override syminfo.timezone, which drives computation
+        // (timestamp(), hour, dayofmonth, time_tradingday, etc.).
+        if (this._chartTimezone) {
+            context.chartTimezone = this._chartTimezone;
+        }
+        // Host-bound viewport overrides (chart.left/right_visible_bar_time).
+        // Undefined values mean "use marketData-derived defaults" — see ChartHelper.
+        context.viewportLeft = this._viewportLeft;
+        context.viewportRight = this._viewportRight;
+
+        context.__maxLoops = this._maxLoops;
+        context._alertMode = this._alertMode;
 
         context.pineTSCode = pineTSCode;
         context.isSecondaryContext = isSecondary; // Set secondary context flag
@@ -588,6 +1013,8 @@ export class PineTS {
         context.data.openTime = new Series([]);
         context.data.closeTime = new Series([]);
 
+        context.length = this.data.length;
+
         return context;
     }
 
@@ -597,7 +1024,31 @@ export class PineTS {
      */
     private _transpileCode(pineTSCode: Function | String): Function {
         const transformer = transpile.bind(this);
-        return transformer(pineTSCode, this._debugSettings);
+        const fn = transformer(pineTSCode, this._debugSettings);
+        this._usesVisibleRange = this._detectViewportUsage(fn);
+        return fn;
+    }
+
+    /**
+     * Static analysis on the transpiled function body to detect references to
+     * host-bound built-ins (currently visible-range; extensible via
+     * VIEWPORT_DEPENDENT_BUILTINS). Comments are stripped during pine2js, so
+     * scanning the post-transpile output is comment-safe.
+     *
+     * Why post-transpile (not regex on Pine source): a `chart.left_visible_bar_time`
+     * literal inside a // comment would be a false positive at the source level.
+     * After pine2js, only live code remains.
+     *
+     * Why regex (not AST visitor): `chart` is a reserved namespace in
+     * KNOWN_NAMESPACES — Pine scripts cannot shadow it with a local identifier,
+     * so a whole-word match on `chart.<prop>` is unambiguous.
+     */
+    private _detectViewportUsage(fn: Function): boolean {
+        const body = fn.toString();
+        return VIEWPORT_DEPENDENT_BUILTINS.some((name) => {
+            const escaped = name.replace(/\./g, '\\.');
+            return new RegExp(`\\b${escaped}\\b`).test(body);
+        });
     }
 
     /**
@@ -609,6 +1060,7 @@ export class PineTS {
 
         for (let i = startIdx; i < endIdx; i++) {
             context.idx = i;
+            context._execTick = (context._execTick || 0) + 1;
 
             context.data.close.data.push(this.close[i]);
             context.data.open.data.push(this.open[i]);
@@ -621,6 +1073,7 @@ export class PineTS {
             context.data.hlcc4.data.push(this.hlcc4[i]);
             context.data.openTime.data.push(this.openTime[i]);
             context.data.closeTime.data.push(this.closeTime[i]);
+            context.data.bar_index.data.push(i);
 
             // Process strategy orders at the START of the bar (filling at Open)
             if (context.strategy) {
@@ -656,6 +1109,13 @@ export class PineTS {
                 }
 
                 context.result.push(result);
+            }
+
+            // Sync drawing object plots after all mutations for this bar.
+            // Serializes the current state of labels/lines/boxes/etc. into plain objects
+            // so that context.plots contains safe, JSON-serializable data.
+            for (const helper of context._drawingHelpers) {
+                if (helper.syncToPlot) helper.syncToPlot();
             }
 
             //shift context

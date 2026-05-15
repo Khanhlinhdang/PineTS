@@ -51,8 +51,10 @@ export function alma(context: any) {
                 lastIdx: -1,
                 // Committed state
                 prevWindow: [],
+                prevCallCount: 0,
                 // Tentative state (working window)
                 currentWindow: [],
+                currentCallCount: 0,
                 weights: weights // weights are constant
             };
         }
@@ -64,6 +66,7 @@ export function alma(context: any) {
             if (state.lastIdx >= 0) {
                 // Commit the tentative window to prevWindow
                 state.prevWindow = [...state.currentWindow];
+                state.prevCallCount = state.currentCallCount;
             }
             state.lastIdx = context.idx;
         }
@@ -76,13 +79,22 @@ export function alma(context: any) {
         // Add current value to window (most recent at front)
         window.unshift(currentValue);
 
-        if (window.length > period) {
-            // Remove oldest value
+        while (window.length > period) {
             window.pop();
+        }
+
+        // Track actual call count for callsite-correct backfill
+        const callCount = state.prevCallCount + 1;
+        if (window.length < period && (callCount >= period || context.idx >= period - 1)) {
+            const series = Series.from(source);
+            while (window.length < period) {
+                window.push(series.get(window.length));
+            }
         }
 
         // Update tentative state
         state.currentWindow = window;
+        state.currentCallCount = callCount;
 
         if (window.length < period) {
             // Not enough data yet

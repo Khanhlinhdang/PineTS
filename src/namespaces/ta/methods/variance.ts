@@ -15,8 +15,10 @@ export function variance(context: any) {
                 lastIdx: -1,
                 // Committed state
                 prevWindow: [],
+                prevCallCount: 0,
                 // Tentative state
-                currentWindow: []
+                currentWindow: [],
+                currentCallCount: 0
             };
         }
 
@@ -26,6 +28,7 @@ export function variance(context: any) {
         if (context.idx > state.lastIdx) {
             if (state.lastIdx >= 0) {
                 state.prevWindow = [...state.currentWindow];
+                state.prevCallCount = state.currentCallCount;
             }
             state.lastIdx = context.idx;
         }
@@ -35,11 +38,21 @@ export function variance(context: any) {
         const window = [...state.prevWindow];
         window.unshift(currentValue);
 
-        if (window.length > length) {
+        while (window.length > length) {
             window.pop();
         }
 
+        // Track actual call count for callsite-correct backfill
+        const callCount = state.prevCallCount + 1;
+        if (window.length < length && (callCount >= length || context.idx >= length - 1)) {
+            const series = Series.from(source);
+            while (window.length < length) {
+                window.push(series.get(window.length));
+            }
+        }
+
         state.currentWindow = window;
+        state.currentCallCount = callCount;
 
         if (window.length < length) {
             return NaN;

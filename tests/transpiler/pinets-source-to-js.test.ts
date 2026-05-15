@@ -34,15 +34,18 @@ describe('Transpiler', () => {
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close, open, high, low, hlc3, volume} = $.data;
   const {plotchar, color, plot, na, nz} = $.core;
   const ta = $.ta;
   const math = $.math;
   const p0 = $.param(open, undefined, 'p0');
-  $.let.glb1_lowest_signaled_price = $.init($.let.glb1_lowest_signaled_price, nz(p0, NaN));
-  $.let.glb1_n_a = $.init($.let.glb1_n_a, NaN);
-  const p1 = $.param($.let.glb1_n_a, undefined, 'p1');
-  if (na(p1)) {
+  const p1 = $.param(na.__value, undefined, 'p1');
+  $.let.glb1_lowest_signaled_price = $.init($.let.glb1_lowest_signaled_price, nz(p0, p1));
+  $.let.glb1_n_a = $.init($.let.glb1_n_a, na.__value);
+  const p2 = na.param($.let.glb1_n_a, undefined, 'p2');
+  const temp_1 = na.any(p2);
+  if (temp_1) {
     $.set($.let.glb1_n_a, $.get(close, 0));
   }
 }`;
@@ -86,17 +89,21 @@ describe('Transpiler', () => {
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close, open, high, low, hlc3, volume} = $.data;
   const {plotchar, color, plot, na, nz} = $.core;
   const ta = $.ta;
   const math = $.math;
   const p0 = $.param(open, undefined, 'p0');
-  $.let.glb1_lowest_signaled_price = $.init($.let.glb1_lowest_signaled_price, nz(p0, NaN));
-  $.let.glb1_n_a = $.init($.let.glb1_n_a, NaN);
-  const p1 = $.param($.let.glb1_n_a, undefined, 'p1');
-  if (na(p1)) {
+  const p1 = $.param(na.__value, undefined, 'p1');
+  $.let.glb1_lowest_signaled_price = $.init($.let.glb1_lowest_signaled_price, nz(p0, p1));
+  $.let.glb1_n_a = $.init($.let.glb1_n_a, na.__value);
+  const p2 = na.param($.let.glb1_n_a, undefined, 'p2');
+  const temp_1 = na.any(p2);
+  if (temp_1) {
     $.set($.let.glb1_n_a, $.get(close, 0));
   }
+  ;
   return {
     open,
     close: close,
@@ -135,17 +142,70 @@ if (na(n_a)) {
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {open, close} = $.data;
   const {na, nz} = $.pine;
   const ta = $.ta;
   const math = $.math;
   const p0 = $.param(open, undefined, 'p0');
-  $.let.glb1_lowest_signaled_price = $.init($.let.glb1_lowest_signaled_price, nz(p0, NaN));
-  $.let.glb1_n_a = $.init($.let.glb1_n_a, NaN);
-  const p1 = $.param($.let.glb1_n_a, undefined, 'p1');
-  if (na(p1)) {
+  const p1 = $.param(na.__value, undefined, 'p1');
+  $.let.glb1_lowest_signaled_price = $.init($.let.glb1_lowest_signaled_price, nz(p0, p1));
+  $.let.glb1_n_a = $.init($.let.glb1_n_a, na.__value);
+  const p2 = na.param($.let.glb1_n_a, undefined, 'p2');
+  const temp_1 = na.any(p2);
+  if (temp_1) {
     $.set($.let.glb1_n_a, $.get(close, 0));
   }
+}`;
+
+        expect(result).toBe(expected_code);
+    });
+
+    it('unary operator in expressions', async () => {
+        const fakeContext = {};
+        const transformer = transpile.bind(fakeContext);
+
+        // we expect the transpiler to wrap the code in a context function and add missing namespaces
+        const source = `//@version=6
+indicator("RSI Divergence Detector", overlay=false)
+
+
+up = ta.rma(math.max(ta.change(close), 0), 14)
+down = ta.rma(-math.min(ta.change(close), 0), 14)`;
+
+        let transpiled = transformer(source);
+
+        console.log(transpiled.toString());
+        const result = transpiled.toString().trim();
+
+        /* prettier-ignore */
+        const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
+  const {close} = $.data;
+  const {ta, math, indicator} = $.pine;
+  const p0 = $.param('RSI Divergence Detector', undefined, 'p0');
+  const p1 = $.param({
+    overlay: false
+  }, undefined, 'p1');
+  indicator(p0, p1);
+  const p2 = ta.param(close, undefined, 'p2');
+  const temp_1 = ta.change(p2, "_ta0");
+  const p3 = math.param(temp_1, undefined, 'p3');
+  const p4 = math.param(0, undefined, 'p4');
+  const temp_2 = math.max(p3, p4);
+  const p5 = ta.param(temp_2, undefined, 'p5');
+  const p6 = ta.param(14, undefined, 'p6');
+  const temp_3 = ta.rma(p5, p6, "_ta1");
+  $.let.glb1_up = $.init($.let.glb1_up, temp_3);
+  const p7 = ta.param(close, undefined, 'p7');
+  const temp_4 = ta.change(p7, "_ta2");
+  const p8 = math.param(temp_4, undefined, 'p8');
+  const p9 = math.param(0, undefined, 'p9');
+  const temp_5 = math.min(p8, p9);
+  const p10 = ta.param(-temp_5, undefined, 'p10');
+  const p11 = ta.param(14, undefined, 'p11');
+  const temp_6 = ta.rma(p10, p11, "_ta3");
+  $.let.glb1_down = $.init($.let.glb1_down, temp_6);
 }`;
 
         expect(result).toBe(expected_code);
@@ -174,6 +234,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {open, close} = $.data;
   const {input} = $.pine;
   const p0 = input.param({
@@ -237,6 +298,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {high, low, close} = $.data;
   const {ta, na} = $.pine;
   const {open} = $.data;
@@ -245,7 +307,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
   const p1 = ta.param(14, undefined, 'p1');
   const temp_1 = ta.sma(p0, p1, "_ta0");
   $.const.glb1_sma = $.init($.const.glb1_sma, temp_1);
-  if ($.pine.math.__eq($.get(low, 0), NaN)) {
+  if ($.pine.math.__eq($.get(low, 0), $.get(na.__value, 0))) {
     $.const.if2_data3 = $.init($.const.if2_data3, $.get(high, 0));
   }
 }`;
@@ -299,6 +361,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close} = $.data;
   const ta = $.ta;
   const math = $.math;
@@ -373,6 +436,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close} = $.data;
   const ta = $.ta;
   const p0 = ta.param(close, undefined, 'p0');
@@ -406,17 +470,20 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {ta, plot, na, bool} = $.pine;
   $.let.glb1_highUsePivot = $.init($.let.glb1_highUsePivot, 10);
   const p0 = plot.param($.let.glb1_highUsePivot, undefined, 'p0');
   const p1 = ta.param($.let.glb1_highUsePivot, undefined, 'p1');
   const temp_1 = ta.change(p1, "_ta0");
   const p2 = $.param(temp_1, undefined, 'p2');
-  const p3 = plot.param(bool(p2) ? NaN : "#FF0000", undefined, 'p3');
+  const p3 = plot.param(bool(p2) ? $.get(na.__value, 0) : "#FF0000", undefined, 'p3');
   const p4 = plot.param({
     color: p3
   }, undefined, 'p4');
-  const temp_2 = plot.any(p0, p4);
+  const temp_2 = plot.any(p0, p4, {
+    __callsiteId: "#0"
+  });
   temp_2;
 }`;
 
@@ -449,6 +516,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close} = $.data;
   const {ta, fixnan} = $.pine;
   const p0 = ta.param(close, undefined, 'p0');
@@ -499,6 +567,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close, open} = $.data;
   const ta = $.ta;
   $.const.glb1_green_candle = $.init($.const.glb1_green_candle, $.get(close, 0) > $.get(open, 0));
@@ -538,6 +607,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close, open} = $.data;
   const ta = $.ta;
   $.const.glb1_green_candle = $.init($.const.glb1_green_candle, $.get(close, 0) > $.get(open, 0) ? 1 : 0);
@@ -573,6 +643,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close, open} = $.data;
   const {plot} = $.core;
   $.const.glb1_res = $.init($.const.glb1_res, open);
@@ -581,21 +652,27 @@ let src_open = input.any({ title: 'Open Source', defval: open });
   const p2 = plot.param({
     color: "white"
   }, undefined, 'p2');
-  const temp_1 = plot.any(p0, p1, p2);
+  const temp_1 = plot.any(p0, p1, p2, {
+    __callsiteId: "#0"
+  });
   temp_1;
   const p3 = plot.param($.get(close, 0) && $.get(open, 0), undefined, 'p3');
   const p4 = plot.param("plot2", undefined, 'p4');
   const p5 = plot.param({
     color: "white"
   }, undefined, 'p5');
-  const temp_2 = plot.any(p3, p4, p5);
+  const temp_2 = plot.any(p3, p4, p5, {
+    __callsiteId: "#1"
+  });
   temp_2;
   const p6 = plot.param(-$.get($.const.glb1_res, 0), undefined, 'p6');
   const p7 = plot.param("plot3", undefined, 'p7');
   const p8 = plot.param({
     color: "white"
   }, undefined, 'p8');
-  const temp_3 = plot.any(p6, p7, p8);
+  const temp_3 = plot.any(p6, p7, p8, {
+    __callsiteId: "#2"
+  });
   temp_3;
 }`;
 
@@ -664,6 +741,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close} = $.data;
   $.const.glb1__cc = $.init($.const.glb1__cc, close);
   $.let.glb1_aa = $.init($.let.glb1_aa, 0);
@@ -679,33 +757,43 @@ let src_open = input.any({ title: 'Open Source', defval: open });
     $.let.if2_cc3 = $.init($.let.if2_cc3, $.get($.const.glb1__cc, $.get($.let.glb1_aa, 99)));
     $.set($.let.glb1_aa, 1);
   }
+  ;
   if ($.get($.const.glb1__cc, 0) > 1) {
     $.set($.let.glb1_aa, 2);
   }
+  ;
   if ($.get($.const.glb1__cc, 1) > 1) {
     $.set($.let.glb1_aa, 3);
   }
+  ;
   if ($.get($.const.glb1__cc, $.get($.let.glb1_aa, 0)) > 1) {
     $.set($.let.glb1_aa, 3);
   }
+  ;
   if ($.get($.const.glb1__cc, $.let.glb1_aa[0]) > 1) {
     $.set($.let.glb1_aa, 3);
   }
+  ;
   if ($.get($.const.glb1__cc, $.let.glb1_aa[1]) > 1) {
     $.set($.let.glb1_aa, 3);
   }
+  ;
   if ($.get(close, 0) > 1) {
     $.set($.let.glb1_aa, 4);
   }
+  ;
   if ($.get(close, 0) > 1) {
     $.set($.let.glb1_aa, 5);
   }
+  ;
   if ($.get(close, 1) > 1) {
     $.set($.let.glb1_aa, 6);
   }
+  ;
   if ($.get(close, $.get($.let.glb1_aa, 0)) > 1) {
     $.set($.let.glb1_aa, 6);
   }
+  ;
   if ($.get(close, $.let.glb1_aa[1]) > 1) {
     $.set($.let.glb1_aa, 6);
   }
@@ -786,10 +874,13 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close} = $.data;
   $.let.glb1_aa = $.init($.let.glb1_aa, 10);
   $.let.glb1__cc = $.init($.let.glb1__cc, close);
+  let __lg0 = 0;
   for (let i = 0; i < $.get($.let.glb1__cc, 1); i++) {
+    if (++__lg0 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg0)");
     $.let.for2_bb = $.init($.let.for2_bb, 1);
     $.let.for2_cc = $.init($.let.for2_cc, close);
     $.set($.let.for2_cc, $.get(close, 1));
@@ -804,34 +895,64 @@ let src_open = input.any({ title: 'Open Source', defval: open });
     $.let.for2_cc3 = $.init($.let.for2_cc3, $.get($.let.glb1__cc, $.get($.let.glb1_aa, 99)));
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg1 = 0;
   for (let i = 0; i < 10; i++) {
+    if (++__lg1 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg1)");
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg2 = 0;
   for (let i = 0; i < $.get($.let.glb1_aa, 0); i++) {
+    if (++__lg2 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg2)");
     $.set($.let.glb1__cc, $.get($.let.glb1__cc, i));
   }
+  ;
+  let __lg3 = 0;
   for (let i = 0; i < $.get($.let.glb1__cc, 0); i++) {
+    if (++__lg3 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg3)");
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg4 = 0;
   for (let i = 0; i < $.get($.let.glb1__cc, 1); i++) {
+    if (++__lg4 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg4)");
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg5 = 0;
   for (let i = 0; i < $.get($.let.glb1__cc, $.get($.let.glb1_aa, 0)); i++) {
+    if (++__lg5 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg5)");
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg6 = 0;
   for (let i = 0; i < $.get($.let.glb1__cc, $.let.glb1_aa[99]); i++) {
+    if (++__lg6 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg6)");
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg7 = 0;
   for (let i = 0; i < $.get(close, 0); i++) {
+    if (++__lg7 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg7)");
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg8 = 0;
   for (let i = 0; i < $.get(close, 1); i++) {
+    if (++__lg8 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg8)");
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg9 = 0;
   for (let i = 0; i < $.get(close, $.get($.let.glb1_aa, 0)); i++) {
+    if (++__lg9 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg9)");
     $.set($.let.glb1_aa, i);
   }
+  ;
+  let __lg10 = 0;
   for (let i = 0; i < $.get(close, $.let.glb1_aa[99]); i++) {
+    if (++__lg10 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg10)");
     $.set($.let.glb1_aa, i);
   }
 }`;
@@ -896,6 +1017,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close} = $.data;
   const ta = $.ta;
   const math = $.math;
@@ -904,9 +1026,9 @@ let src_open = input.any({ title: 'Open Source', defval: open });
   function angle(src) {
     const $$ = $.peekCtx();
     $$.const.fn1_rad2degree = $.init($$.const.fn1_rad2degree, 180 / Math.PI);
-    const p0 = ta.param(14, undefined, 'p0');
+    const p0 = ta.param(14, undefined, $$.id + 'p0');
     const temp_1 = ta.atr(p0, $$.id + "_ta0");
-    const p1 = math.param(($.get(src, 0) - $.get(src, 1)) / temp_1, undefined, 'p1');
+    const p1 = math.param(($.get(src, 0) - $.get(src, 1)) / temp_1, undefined, $$.id + 'p1');
     const temp_2 = math.atan(p1);
     $$.const.fn1_ang = $.init($$.const.fn1_ang, $.get($$.const.fn1_rad2degree, 0) * temp_2);
     return $.precision($.get($$.const.fn1_ang, 0));
@@ -926,12 +1048,16 @@ let src_open = input.any({ title: 'Open Source', defval: open });
     $$.let.fn2_cc2 = $.init($$.let.fn2_cc2, $.get($.const.glb1__cc, $.get($.const.glb1_aa, 0)));
     $$.let.fn2_cc3 = $.init($$.let.fn2_cc3, $.get($.const.glb1__cc, $.get($.const.glb1_aa, 99)));
     $$.let.fn2_ret_val = $.init($$.let.fn2_ret_val, 0);
+    let __lg0 = 0;
     for (let i = 1; i <= $.get(avg_len, 0); i++) {
+      if (++__lg0 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg0)");
       $.set($$.let.fn2_ret_val, $.get($$.let.fn2_ret_val, 0) + $.get(avg_src, i));
     }
+    ;
     if ($.pine.math.__eq($.get(avg_len, 0), 0)) {
       $.set($$.let.fn2_ret_val, $.get($$.let.fn2_cc, 1));
     }
+    ;
     return $.precision($.get($$.let.fn2_ret_val, 0) / $.get(avg_len, 0));
   }
   const p2 = $.param(close, undefined, 'p2');
@@ -976,15 +1102,16 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {high} = $.data;
   const {open, close} = $.data;
   const {array} = $.pine;
   const p0 = array.param(5, undefined, 'p0');
   const temp_1 = array.new_float(p0);
   $.let.glb1_a = $.init($.let.glb1_a, temp_1);
-  $.get($.let.glb1_a, 0).fill($.get(close, 1) - $.get(open, 0));
+  $.get($.let.glb1_a, 0)?.fill?.($.get(close, 1) - $.get(open, 0));
   $.let.glb1_res = $.init($.let.glb1_res, $.get($.let.glb1_a, 0));
-  $.let.glb1_i = $.init($.let.glb1_i, $.get($.let.glb1_a, 0).indexof($.get(high, 0)));
+  $.let.glb1_i = $.init($.let.glb1_i, $.get($.let.glb1_a, 0)?.indexof?.($.get(high, 0)));
 }`;
 
         expect(result).toBe(expected_code);
@@ -1021,6 +1148,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close, open} = $.data;
   const {plot, plotchar, request, ta} = $.pine;
   function foo() {
@@ -1098,6 +1226,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close} = $.data;
   const ta = $.ta;
   $.const.glb1__cc = $.init($.const.glb1__cc, close);
@@ -1117,12 +1246,16 @@ let src_open = input.any({ title: 'Open Source', defval: open });
     $$.let.fn1_cc2 = $.init($$.let.fn1_cc2, $.get($.const.glb1__cc, $.get($.const.glb1_aa, 0)));
     $$.let.fn1_cc3 = $.init($$.let.fn1_cc3, $.get($.const.glb1__cc, $.get($.const.glb1_aa, 99)));
     $$.let.fn1_ret_val = $.init($$.let.fn1_ret_val, 0);
+    let __lg0 = 0;
     for (let i = 1; i <= $.get(avg_len, 0); i++) {
+      if (++__lg0 > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lg0)");
       $.set($$.let.fn1_ret_val, $.get($$.let.fn1_ret_val, 0) + $.get(avg_src, i));
     }
+    ;
     if ($.pine.math.__eq($.get(avg_len, 0), 0)) {
       $.set($$.let.fn1_ret_val, $.get($$.let.fn1_cc, 1));
     }
+    ;
     return $.precision($.get($$.let.fn1_ret_val, 0) / $.get(avg_len, 0));
   }
   const p0 = $.param(close, undefined, 'p0');
@@ -1174,6 +1307,7 @@ let src_open = input.any({ title: 'Open Source', defval: open });
 
         /* prettier-ignore */
         const expected_code = `async $ => {
+  const __maxLoops = $.__maxLoops || 500000;
   const {close, open, high} = $.data;
   const {Type, ta} = $.pine;
   const p0 = $.param({
@@ -1183,8 +1317,8 @@ let src_open = input.any({ title: 'Open Source', defval: open });
     active: "bool"
   }, undefined, 'p0');
   $.const.glb1_Trade = $.init($.const.glb1_Trade, Type(p0));
-  $.let.glb1_trade = $.init($.let.glb1_trade, $.get($.const.glb1_Trade, 0).new($.get(close, 0), $.get(open, 0), $.get(high, 0), $.get(close, 0) > $.get(open, 0)));
-  $.let.glb1_trade2 = $.init($.let.glb1_trade2, $.get($.let.glb1_trade, 0).copy());
+  $.let.glb1_trade = $.init($.let.glb1_trade, $.get($.const.glb1_Trade, 0)?.new?.($.get(close, 0), $.get(open, 0), $.get(high, 0), $.get(close, 0) > $.get(open, 0)));
+  $.let.glb1_trade2 = $.init($.let.glb1_trade2, $.get($.let.glb1_trade, 0)?.copy?.());
   $.get($.let.glb1_trade2, 0).active = false;
   const p1 = ta.param($.get($.let.glb1_trade, 0).entry, undefined, 'p1');
   const p2 = ta.param(14, undefined, 'p2');
@@ -1275,8 +1409,9 @@ let src_open = input.any({ title: 'Open Source', defval: open });
         const result = transpiled.toString().trim();
 
         // All three usages should transform variables consistently
+        // != is now transpiled to $.pine.math.__neq() for na-aware inequality
         const expectedPattern =
-            /\$\.get\(\$\.let\.glb1_buy, 0\) && \$\.get\(\$\.let\.glb1_xs, 0\) != \$\.get\(\$\.let\.glb1_xs, 1\) && \$\.get\(\$\.let\.glb1_direction, 0\) < 0/g;
+            /\$\.get\(\$\.let\.glb1_buy, 0\) && \$\.pine\.math\.__neq\(\$\.get\(\$\.let\.glb1_xs, 0\), \$\.get\(\$\.let\.glb1_xs, 1\)\) && \$\.get\(\$\.let\.glb1_direction, 0\) < 0/g;
         const matches = result.match(expectedPattern);
 
         // Should appear 3 times: in plotshape arg, foo arg, and buyCond assignment

@@ -174,7 +174,7 @@ describe('Technical Analysis - Volatility & Range', () => {
             const upper = upper_plotdata[i].value;
             const middle = middle_plotdata[i]?.value;
             const lower = lower_plotdata[i]?.value;
-            plotdata_str += `[${str_time}]: ${upper} ${middle} ${lower}\n`;
+            plotdata_str += `[${str_time}]: ${middle} ${upper} ${lower}\n`;
         }
 
         const expected_plot = `[2019-05-20T00:00:00.000-00:00]: 6949.544 12463.0707638549 1436.0172361451

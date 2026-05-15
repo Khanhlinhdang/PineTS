@@ -16,8 +16,11 @@ This guide explains how to initialize PineTS and run indicators or strategies wi
 -   [Initialization Options](#initialization-options)
 -   [The run() Method](#the-run-method)
 -   [The stream() Method](#the-stream-method)
+-   [The update() Method](#the-update-method)
+-   [Host Environment (Visible Range)](#host-environment-visible-range)
 -   [Context Object](#context-object)
 -   [Return Values](#return-values)
+-   [Alerts](#alerts)
 -   [Complete Examples](#complete-examples)
 
 ---
@@ -190,27 +193,17 @@ const pineTSWithDateRange = new PineTS(
 
 #### Available Providers
 
-Currently supported providers:
+| Provider | Usage | API Key | Best For |
+| --- | --- | --- | --- |
+| `Provider.Binance` | Crypto market data | Not required | Cryptocurrency |
+| `Provider.FMP` | Stocks, forex, crypto | Required | US/intl stocks |
+| `Provider.Alpaca` | US stocks, crypto | Required (key + secret) | US equities |
 
--   `Provider.Binance` - Binance exchange data provider
+Providers that require API keys must be configured before use. See the **[Data Providers](../data-providers/)** page for detailed setup instructions, configuration options, and examples for each provider.
 
 #### Supported Timeframes
 
-The following timeframes are supported with Binance provider:
-
-| Timeframe         | Description | Binance Interval |
-| ----------------- | ----------- | ---------------- |
-| `'1'`             | 1 minute    | `1m`             |
-| `'3'`             | 3 minutes   | `3m`             |
-| `'5'`             | 5 minutes   | `5m`             |
-| `'15'`            | 15 minutes  | `15m`            |
-| `'30'`            | 30 minutes  | `30m`            |
-| `'60'`            | 1 hour      | `1h`             |
-| `'120'`           | 2 hours     | `2h`             |
-| `'240'` or `'4H'` | 4 hours     | `4h`             |
-| `'D'` or `'1D'`   | 1 day       | `1d`             |
-| `'W'` or `'1W'`   | 1 week      | `1w`             |
-| `'M'` or `'1M'`   | 1 month     | `1M`             |
+All providers support the standard timeframe strings: `'1'`, `'3'`, `'5'`, `'15'`, `'30'`, `'60'`, `'120'`, `'240'`, `'D'`, `'W'`, `'M'`. Timeframes not natively supported by a provider are automatically aggregated from smaller candles. See the **[Timeframe Reference](../data-providers/#timeframe-reference)** for the full support matrix.
 
 ### Option 2: Using Custom Data
 
@@ -350,6 +343,16 @@ evt.on('data', (context) => {
     console.log('New data:', context.result);
 });
 
+// Handle alert events (from alert() and alertcondition() calls)
+evt.on('alert', (alert) => {
+    console.log('Alert:', alert.message);
+});
+
+// Handle runtime warnings (non-blocking, e.g. array OOB)
+evt.on('warning', (warning) => {
+    console.warn('Warning:', warning.message);
+});
+
 // Handle errors
 evt.on('error', (error) => {
     console.error('Stream error:', error);
@@ -358,6 +361,129 @@ evt.on('error', (error) => {
 // Stop streaming
 // evt.stop();
 ```
+
+**Available events:**
+
+| Event | Payload | Description |
+| --- | --- | --- |
+| `'data'` | `Context` | New bar data processed |
+| `'alert'` | `{ type, message, title?, freq?, bar_index, time }` | Alert or alertcondition fired |
+| `'warning'` | `{ message, method?, bar }` | Non-blocking runtime warning |
+| `'error'` | `Error` | Fatal error (script halted) |
+
+---
+
+## The update() Method
+
+`update()` is a smart wrapper around `run()` that skips execution when the
+output cannot have changed. Use it instead of `run()` in event-driven flows
+(viewport changes, settings tweaks, etc.) so non-affected indicators are
+free to call.
+
+### Syntax
+
+```typescript
+const context = await pineTS.update(
+    pineTSCode?: Indicator | Function | String,
+): Promise<Context>
+```
+
+### Behavior
+
+| Call | Action |
+| --- | --- |
+| First call (no cached result) | Executes — equivalent to `run()`. `pineTSCode` is required here. |
+| Subsequent call, script **does not** use visible-range built-ins | Returns the cached `Context` immediately (no work). |
+| Subsequent call, script uses visible-range AND viewport changed since last cached run | Re-executes against the new viewport, returns fresh `Context`. |
+| Subsequent call, viewport unchanged | Returns the cached `Context`. |
+
+The `pineTSCode` argument is optional after the first call — the previously
+seen code is reused. Pass it again only when the script source itself
+changes.
+
+### Example
+
+```typescript
+const pine = new PineTS(Provider.Binance, 'BTCUSDT', '1W', 500);
+
+// First call: behaves like run()
+await pine.update(code);
+
+// User pans the chart → host computes new visible range
+pine.setVisibleRange(t1, t2);
+await pine.update();   // re-runs ONLY if the script uses visible-range
+
+// User pans again, but to the same range
+await pine.update();   // returns cached result, no compute
+```
+
+---
+
+## Host Environment (Visible Range)
+
+PineTS is renderer-agnostic — it has no UI. But Pine Script has a small set
+of built-ins whose values come from the chart's UI state (the user's current
+zoom/pan), notably:
+
+| Pine built-in | PineTS behavior |
+| --- | --- |
+| `chart.left_visible_bar_time` | Defaults to `marketData[0].openTime`; host can override via `setVisibleRange()` |
+| `chart.right_visible_bar_time` | Defaults to `marketData[marketData.length - 1].openTime`; host can override |
+
+For most scripts these are unused, and the defaults are "the full loaded
+range is the viewport" — perfectly defensible since PineTS does compute over
+everything it loaded. For scripts that *do* reference them (e.g. LuxAlgo's
+Supply-and-Demand Visible Range), a host like QFChart can wire its actual
+viewport in.
+
+### `setVisibleRange(left: number, right: number)`
+
+Stores host viewport values. The setter only updates internal state; it
+does not trigger a re-run by itself. Call `update()` afterwards to apply.
+
+```typescript
+pine.setVisibleRange(
+    new Date('2024-01-01').getTime(),
+    new Date('2024-06-30').getTime(),
+);
+await pine.update(code);
+```
+
+### `usesVisibleRange(): boolean`
+
+Static-analysis flag set during transpile. Returns `true` if the loaded
+script references any visible-range built-in.
+
+Use this to short-circuit fan-out logic across many indicators on one
+chart — only viewport-dependent indicators need re-runs on user zoom:
+
+```typescript
+function onChartPan(left, right) {
+    for (const p of indicators) {
+        if (!p.usesVisibleRange()) continue;   // skip — output unaffected
+        p.setVisibleRange(left, right);
+        chart.clear();                          // QFChart helper
+        const ctx = await p.update();
+        chart.addIndicator(p.id, ctx.plots);
+    }
+}
+```
+
+Detection is performed by scanning the transpiled function body (comments
+are stripped during pine2js, so accidental references inside comments do
+not flip the flag).
+
+### `visibleRangeLeft` / `visibleRangeRight` getters
+
+Read back the current values stored by `setVisibleRange()`. Return
+`undefined` when the setter has never been called (the default-falls-back
+case).
+
+### Streaming integration
+
+`stream()` already handles continuous data input. Combining `stream()`
+with `setVisibleRange()` is a planned follow-up — for the batch path,
+use `run()` / `update()`.
 
 ---
 
@@ -410,6 +536,8 @@ interface Context {
     // Results
     result: any; // Computed results
     plots: any; // Plot data
+    alerts: any[]; // Alert events from alert() and alertcondition()
+    warnings: any[]; // Runtime warnings (e.g. array OOB)
 
     // Market context
     marketData: any[]; // Raw market data
@@ -817,6 +945,44 @@ try {
     console.error('Error running indicator:', error);
 }
 ```
+
+---
+
+## Alerts
+
+PineTS supports `alert()` and `alertcondition()` from Pine Script. Alerts are captured as events that your application can act on — send webhooks, trigger trades, or log signals.
+
+### Quick Example
+
+```typescript
+const pine = new PineTS(Provider.Binance, 'BTCUSDT', 'D', 100);
+
+const code = `
+//@version=6
+indicator("EMA Cross Alert")
+if ta.crossover(ta.ema(close, 9), ta.ema(close, 21))
+    alert("Bullish cross!", alert.freq_once_per_bar)
+plot(close)
+`;
+
+// With run() — alerts on context
+const ctx = await pine.run(code);
+console.log(ctx.alerts); // [{type: 'alert', message: 'Bullish cross!', ...}]
+
+// With stream() — real-time alert events
+const evt = pine.stream(code, { live: true });
+evt.on('alert', (a) => console.log('ALERT:', a.message));
+```
+
+### Backtest Mode
+
+By default, alerts only fire on the last (realtime) bar. For backtesting, enable alerts on all bars:
+
+```typescript
+pine.setAlertMode('all'); // Fire alerts on every bar
+```
+
+For full documentation including frequency constants, alert modes, and complete examples, see the **[Alerts](../alerts/)** page.
 
 ---
 

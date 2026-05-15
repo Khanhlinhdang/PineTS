@@ -143,7 +143,13 @@ _experiments
 *.tst.*
 .cursor
 config.json
-bfg.jar
 .scratchpad
 tests/_local
 plans/*
+
+.external
+
+tests/automated
+CLAUDE.md 
+MEMORY.md
+.claude

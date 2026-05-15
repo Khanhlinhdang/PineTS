@@ -95,17 +95,17 @@ parent: API Coverage
 
 | Function       | Status | Description  |
 | -------------- | ------ | ------------ |
-| `extend.both`  |        | Extend both  |
-| `extend.left`  |        | Extend left  |
-| `extend.none`  |        | Extend none  |
-| `extend.right` |        | Extend right |
+| `extend.both`  | ✅     | Extend both  |
+| `extend.left`  | ✅     | Extend left  |
+| `extend.none`  | ✅     | Extend none  |
+| `extend.right` | ✅     | Extend right |
 
 ### Font
 
 | Function                | Status | Description           |
 | ----------------------- | ------ | --------------------- |
-| `font.family_default`   |        | Default font family   |
-| `font.family_monospace` |        | Monospace font family |
+| `font.family_default`   | ✅     | Default font family   |
+| `font.family_monospace` | ✅     | Monospace font family |
 
 ### Format
 
@@ -165,31 +165,31 @@ parent: API Coverage
 
 | Function                 | Status | Description            |
 | ------------------------ | ------ | ---------------------- |
-| `position.bottom_center` |        | Bottom center position |
-| `position.bottom_left`   |        | Bottom left position   |
-| `position.bottom_right`  |        | Bottom right position  |
-| `position.middle_center` |        | Middle center position |
-| `position.middle_left`   |        | Middle left position   |
-| `position.middle_right`  |        | Middle right position  |
-| `position.top_center`    |        | Top center position    |
-| `position.top_left`      |        | Top left position      |
-| `position.top_right`     |        | Top right position     |
+| `position.bottom_center` | ✅     | Bottom center position |
+| `position.bottom_left`   | ✅     | Bottom left position   |
+| `position.bottom_right`  | ✅     | Bottom right position  |
+| `position.middle_center` | ✅     | Middle center position |
+| `position.middle_left`   | ✅     | Middle left position   |
+| `position.middle_right`  | ✅     | Middle right position  |
+| `position.top_center`    | ✅     | Top center position    |
+| `position.top_left`      | ✅     | Top left position      |
+| `position.top_right`     | ✅     | Top right position     |
 
 ### Scale
 
 | Function      | Status | Description |
 | ------------- | ------ | ----------- |
-| `scale.left`  |        | Left scale  |
-| `scale.none`  |        | No scale    |
-| `scale.right` |        | Right scale |
+| `scale.left`  | ✅     | Left scale  |
+| `scale.none`  | ✅     | No scale    |
+| `scale.right` | ✅     | Right scale |
 
 ### Settlement_as_close
 
 | Function                      | Status | Description                 |
 | ----------------------------- | ------ | --------------------------- |
-| `settlement_as_close.inherit` |        | Inherit settlement as close |
-| `settlement_as_close.off`     |        | Settlement as close off     |
-| `settlement_as_close.on`      |        | Settlement as close on      |
+| `settlement_as_close.inherit` | ✅     | Inherit settlement as close |
+| `settlement_as_close.off`     | ✅     | Settlement as close off     |
+| `settlement_as_close.on`      | ✅     | Settlement as close on      |
 
 ### Shape
 
@@ -223,90 +223,90 @@ parent: API Coverage
 
 | Function             | Status | Description       |
 | -------------------- | ------ | ----------------- |
-| `splits.denominator` |        | Split denominator |
-| `splits.numerator`   |        | Split numerator   |
+| `splits.denominator` | ✅     | Split denominator |
+| `splits.numerator`   | ✅     | Split numerator   |
 
 ### Text
 
 | Function             | Status | Description           |
 | -------------------- | ------ | --------------------- |
-| `text.align_bottom`  |        | Bottom text alignment |
-| `text.align_center`  |        | Center text alignment |
-| `text.align_left`    |        | Left text alignment   |
-| `text.align_right`   |        | Right text alignment  |
-| `text.align_top`     |        | Top text alignment    |
-| `text.format_bold`   |        | Bold text format      |
-| `text.format_italic` |        | Italic text format    |
-| `text.format_none`   |        | No text format        |
-| `text.wrap_auto`     |        | Auto text wrap        |
-| `text.wrap_none`     |        | No text wrap          |
+| `text.align_bottom`  | ✅     | Bottom text alignment |
+| `text.align_center`  | ✅     | Center text alignment |
+| `text.align_left`    | ✅     | Left text alignment   |
+| `text.align_right`   | ✅     | Right text alignment  |
+| `text.align_top`     | ✅     | Top text alignment    |
+| `text.format_bold`   | ✅     | Bold text format      |
+| `text.format_italic` | ✅     | Italic text format    |
+| `text.format_none`   | ✅     | No text format        |
+| `text.wrap_auto`     | ✅     | Auto text wrap        |
+| `text.wrap_none`     | ✅     | No text wrap          |
 
 ### Xloc
 
 | Function         | Status | Description          |
 | ---------------- | ------ | -------------------- |
-| `xloc.bar_index` |        | Bar index x-location |
-| `xloc.bar_time`  |        | Bar time x-location  |
+| `xloc.bar_index` | ✅     | Bar index x-location |
+| `xloc.bar_time`  | ✅     | Bar time x-location  |
 
 ### Yloc
 
 | Function        | Status | Description          |
 | --------------- | ------ | -------------------- |
-| `yloc.abovebar` |        | Above bar y-location |
-| `yloc.belowbar` |        | Below bar y-location |
-| `yloc.price`    |        | Price y-location     |
+| `yloc.abovebar` | ✅     | Above bar y-location |
+| `yloc.belowbar` | ✅     | Below bar y-location |
+| `yloc.price`    | ✅     | Price y-location     |
 
 ### Dividends
 
 | Function                    | Status | Description            |
 | --------------------------- | ------ | ---------------------- |
-| `dividends.future_amount`   |        | Future dividend amount |
-| `dividends.future_ex_date`  |        | Future ex-date         |
-| `dividends.future_pay_date` |        | Future pay date        |
-| `dividends.gross`           |        | Gross dividend         |
-| `dividends.net`             |        | Net dividend           |
+| `dividends.future_amount`   | ✅     | Future dividend amount |
+| `dividends.future_ex_date`  | ✅     | Future ex-date         |
+| `dividends.future_pay_date` | ✅     | Future pay date        |
+| `dividends.gross`           | ✅     | Gross dividend         |
+| `dividends.net`             | ✅     | Net dividend           |
 
 ### Earnings
 
 | Function                          | Status | Description            |
 | --------------------------------- | ------ | ---------------------- |
-| `earnings.future_eps`             |        | Future EPS             |
-| `earnings.future_period_end_time` |        | Future period end time |
-| `earnings.future_revenue`         |        | Future revenue         |
-| `earnings.future_time`            |        | Future time            |
-| `earnings.actual`                 |        | Actual earnings        |
-| `earnings.estimate`               |        | Estimated earnings     |
-| `earnings.standardized`           |        | Standardized earnings  |
+| `earnings.future_eps`             | ✅     | Future EPS             |
+| `earnings.future_period_end_time` | ✅     | Future period end time |
+| `earnings.future_revenue`         | ✅     | Future revenue         |
+| `earnings.future_time`            | ✅     | Future time            |
+| `earnings.actual`                 | ✅     | Actual earnings        |
+| `earnings.estimate`               | ✅     | Estimated earnings     |
+| `earnings.standardized`           | ✅     | Standardized earnings  |
 
 ### Adjustment
 
 | Function               | Status | Description          |
 | ---------------------- | ------ | -------------------- |
-| `adjustment.dividends` |        | Dividends adjustment |
-| `adjustment.none`      |        | No adjustment        |
-| `adjustment.splits`    |        | Splits adjustment    |
+| `adjustment.dividends` | ✅     | Dividends adjustment |
+| `adjustment.none`      | ✅     | No adjustment        |
+| `adjustment.splits`    | ✅     | Splits adjustment    |
 
 ### Alert
 
 | Function                        | Status | Description                        |
 | ------------------------------- | ------ | ---------------------------------- |
-| `alert.freq_all`                |        | Alert frequency all                |
-| `alert.freq_once_per_bar`       |        | Alert frequency once per bar       |
-| `alert.freq_once_per_bar_close` |        | Alert frequency once per bar close |
+| `alert.freq_all`                | ✅     | Alert frequency all                |
+| `alert.freq_once_per_bar`       | ✅     | Alert frequency once per bar       |
+| `alert.freq_once_per_bar_close` | ✅     | Alert frequency once per bar close |
 
 ### Backadjustment
 
 | Function                 | Status | Description            |
 | ------------------------ | ------ | ---------------------- |
-| `backadjustment.inherit` |        | Inherit backadjustment |
-| `backadjustment.off`     |        | Backadjustment off     |
-| `backadjustment.on`      |        | Backadjustment on      |
+| `backadjustment.inherit` | ✅     | Inherit backadjustment |
+| `backadjustment.off`     | ✅     | Backadjustment off     |
+| `backadjustment.on`      | ✅     | Backadjustment on      |
 
 ### Barmerge
 
 | Function                 | Status | Description   |
 | ------------------------ | ------ | ------------- |
-| `barmerge.gaps_off`      |        | Gaps off      |
-| `barmerge.gaps_on`       |        | Gaps on       |
-| `barmerge.lookahead_off` |        | Lookahead off |
-| `barmerge.lookahead_on`  |        | Lookahead on  |
+| `barmerge.gaps_off`      | ✅     | Gaps off      |
+| `barmerge.gaps_on`       | ✅     | Gaps on       |
+| `barmerge.lookahead_off` | ✅     | Lookahead off |
+| `barmerge.lookahead_on`  | ✅     | Lookahead on  |

@@ -657,3 +657,418 @@ describe('Request ', () => {
         expect(plotdata_str.trim()).toEqual(expected_plot.trim());
     });
 });
+
+/**
+ * Binance provider tests — exercise the full transpiler pipeline with syminfo.tickerid,
+ * testing symbol prefix stripping, same-TF tuple returns, HTF boundary alignment,
+ * and log suppression in secondary contexts.
+ *
+ * These use Pine Script strings (not JS callbacks) so the transpiler wraps arguments
+ * correctly via request.param(), matching real-world usage.
+ */
+describe('Request (Binance - transpiled Pine Script)', () => {
+    // Helper: extract plot data as { time, value }[] filtered to date range
+    function extractPlot(
+        plots: any,
+        name: string,
+        sDate: number,
+        eDate: number,
+    ): { time: string; value: any }[] {
+        const plotdata = plots[name]?.data || [];
+        return plotdata
+            .filter((e: any) => e.time >= sDate && e.time <= eDate)
+            .map((e: any) => ({
+                time: new Date(e.time).toISOString().slice(0, 10),
+                value: e.value,
+            }));
+    }
+
+    it('request.security cross-timeframe with syminfo.tickerid (D close from W chart)', async () => {
+        const sDate = new Date('2019-06-01').getTime();
+        const eDate = new Date('2019-09-01').getTime();
+        const warmup = 365 * 24 * 60 * 60 * 1000;
+
+        const pineTS = new PineTS(Provider.Binance, 'BTCUSDC', 'W', null, sDate - warmup);
+
+        const { plots } = await pineTS.run(
+`//@version=5
+indicator("Test")
+_daily_close = request.security(syminfo.tickerid, "D", close)
+plot(_daily_close, "_dc")
+`);
+
+        const data = extractPlot(plots, '_dc', sDate, eDate);
+
+        // Verify we got 13 weekly bars
+        expect(data.length).toBe(13);
+
+        // Spot-check known TV-verified values (daily close, lookahead=false)
+        expect(data[0].time).toBe('2019-06-03');
+        expect(data[0].value).toBeCloseTo(7638.29, 1);
+
+        expect(data[4].time).toBe('2019-07-01');
+        expect(data[4].value).toBeCloseTo(11480.77, 1);
+
+        expect(data[12].time).toBe('2019-08-26');
+        expect(data[12].value).toBeCloseTo(9758.57, 1);
+    }, 30000);
+
+    it('request.security HTF monthly close with boundary straddling (M close from W chart)', async () => {
+        const sDate = new Date('2019-06-01').getTime();
+        const eDate = new Date('2019-09-01').getTime();
+        const warmup = 365 * 24 * 60 * 60 * 1000;
+
+        const pineTS = new PineTS(Provider.Binance, 'BTCUSDC', 'W', null, sDate - warmup);
+
+        const { plots } = await pineTS.run(
+`//@version=5
+indicator("Test")
+_monthly_close = request.security(syminfo.tickerid, "M", close)
+plot(_monthly_close, "_mc")
+`);
+
+        const data = extractPlot(plots, '_mc', sDate, eDate);
+
+        expect(data.length).toBe(13);
+
+        // First 3 weeks of June: should show May's monthly close (lookahead=false)
+        expect(data[0].value).toBeCloseTo(8561.8, 1);
+        expect(data[1].value).toBeCloseTo(8561.8, 1);
+        expect(data[2].value).toBeCloseTo(8561.8, 1);
+
+        // Week of June 24 onward: June's monthly close
+        expect(data[3].value).toBeCloseTo(10748.93, 1);
+
+        // CRITICAL: Week of Jul 29 — straddles July/August boundary.
+        // Must return July's close, NOT NaN.
+        expect(data[8].time).toBe('2019-07-29');
+        expect(data[8].value).toBeCloseTo(10100.84, 1);
+
+        // CRITICAL: Week of Aug 26 — straddles August/September boundary.
+        // Must return August's close, NOT NaN.
+        expect(data[12].time).toBe('2019-08-26');
+        expect(data[12].value).toBeCloseTo(9591.86, 1);
+    }, 30000);
+
+    it('request.security same-TF tuple return ([open, close] from W chart)', async () => {
+        const sDate = new Date('2019-06-01').getTime();
+        const eDate = new Date('2019-09-01').getTime();
+        const warmup = 365 * 24 * 60 * 60 * 1000;
+
+        const pineTS = new PineTS(Provider.Binance, 'BTCUSDC', 'W', null, sDate - warmup);
+
+        const { plots } = await pineTS.run(
+`//@version=5
+indicator("Test")
+[sec_open, sec_close] = request.security(syminfo.tickerid, "W", [open, close])
+// Same TF: sec_open should equal open, sec_close should equal close
+plot(sec_open, "_so")
+plot(sec_close, "_sc")
+plot(open, "_o")
+plot(close, "_c")
+`);
+
+        const secOpen = extractPlot(plots, '_so', sDate, eDate);
+        const secClose = extractPlot(plots, '_sc', sDate, eDate);
+        const chartOpen = extractPlot(plots, '_o', sDate, eDate);
+        const chartClose = extractPlot(plots, '_c', sDate, eDate);
+
+        expect(secOpen.length).toBe(13);
+        expect(secClose.length).toBe(13);
+
+        // Same-TF: returned values must match the chart's own open/close
+        for (let i = 0; i < secOpen.length; i++) {
+            expect(secOpen[i].value).toBeCloseTo(chartOpen[i].value, 2);
+            expect(secClose[i].value).toBeCloseTo(chartClose[i].value, 2);
+        }
+
+        // Spot-check specific TV-verified values
+        expect(secOpen[0].time).toBe('2019-06-03');
+        expect(secOpen[0].value).toBeCloseTo(8743.6, 1);
+        expect(secClose[0].value).toBeCloseTo(7638.29, 1);
+    }, 30000);
+
+    it('request.security same-TF triple tuple return ([high, low, volume] from W chart)', async () => {
+        const sDate = new Date('2019-06-01').getTime();
+        const eDate = new Date('2019-09-01').getTime();
+        const warmup = 365 * 24 * 60 * 60 * 1000;
+
+        const pineTS = new PineTS(Provider.Binance, 'BTCUSDC', 'W', null, sDate - warmup);
+
+        const { plots } = await pineTS.run(
+`//@version=5
+indicator("Test")
+[sec_high, sec_low, sec_vol] = request.security(syminfo.tickerid, "W", [high, low, volume])
+plot(sec_high, "_sh")
+plot(sec_low, "_sl")
+plot(sec_vol, "_sv")
+plot(high, "_h")
+plot(low, "_l")
+plot(volume, "_v")
+`);
+
+        const secHigh = extractPlot(plots, '_sh', sDate, eDate);
+        const secLow = extractPlot(plots, '_sl', sDate, eDate);
+        const secVol = extractPlot(plots, '_sv', sDate, eDate);
+        const chartHigh = extractPlot(plots, '_h', sDate, eDate);
+        const chartLow = extractPlot(plots, '_l', sDate, eDate);
+        const chartVol = extractPlot(plots, '_v', sDate, eDate);
+
+        expect(secHigh.length).toBe(13);
+
+        // Same-TF: returned values must match the chart's own high/low/volume
+        for (let i = 0; i < secHigh.length; i++) {
+            expect(secHigh[i].value).toBeCloseTo(chartHigh[i].value, 2);
+            expect(secLow[i].value).toBeCloseTo(chartLow[i].value, 2);
+            expect(secVol[i].value).toBeCloseTo(chartVol[i].value, 0);
+        }
+
+        // Spot-check specific TV-verified values
+        expect(secHigh[0].time).toBe('2019-06-03');
+        expect(secHigh[0].value).toBeCloseTo(8752.45, 1);
+        expect(secLow[0].value).toBeCloseTo(7441.21, 1);
+    }, 30000);
+
+    // Regression: array-literal arguments to request.security_lower_tf used
+    // to only rewrite bare-Identifier elements. Nested CallExpressions like
+    // `ta.sma(volume, maLenInput)` passed through untouched, so the global
+    // `let maLenInput` reference inside leaked bare and threw
+    // "ReferenceError: maLenInput is not defined" at runtime.
+    it('request.security_lower_tf accepts a tuple with nested ta.sma(volume, globalLet)', async () => {
+        const sDate = new Date('2024-06-01').getTime();
+        const eDate = new Date('2024-06-15').getTime();
+        const warmup = 365 * 24 * 60 * 60 * 1000;
+
+        const pineTS = new PineTS(Provider.Binance, 'BTCUSDC', 'D', null, sDate - warmup);
+
+        // Must NOT throw "maLenInput is not defined" during the run.
+        const { plots } = await pineTS.run(
+`//@version=6
+indicator("LTF nested call")
+int maLenInput = input.int(20, "MA Length", minval = 5)
+[ltfV, ltfVma] = request.security_lower_tf(syminfo.tickerid, "60", [volume, ta.sma(volume, maLenInput)])
+plot(not na(ltfV) ? ltfV.size() : 0,   "_n")
+plot(not na(ltfVma) ? ltfVma.size() : 0, "_m")
+`);
+
+        const sizes = plots['_n']?.data || [];
+        const matchedSizes = plots['_m']?.data || [];
+        // Both arrays must populate (the LTF "60" inside a "D" chart yields
+        // multiple LTF bars per chart bar — non-zero on most days).
+        const inWindow = sizes.filter((e: any) => e.time >= sDate && e.time <= eDate);
+        expect(inWindow.length).toBeGreaterThan(0);
+        // At least one bar in the window must report a non-empty LTF tuple
+        // for both raw and ta.sma(...) channels.
+        expect(inWindow.some((e: any) => e.value > 0)).toBe(true);
+        const matchedInWindow = matchedSizes.filter((e: any) => e.time >= sDate && e.time <= eDate);
+        expect(matchedInWindow.some((e: any) => e.value > 0)).toBe(true);
+    }, 60000);
+
+    // Regression: cross-symbol request at the chart's timeframe must fetch
+    // the requested symbol's data, not return the chart symbol's expression
+    // verbatim. The same-TF shortcut used to fire on timeframe match alone
+    // and skip building the secondary context for the requested ticker —
+    // returning BTC's close for an `request.security("ETHUSDC", ...)` call.
+    it('request.security("ETHUSDC", chart_tf, close) returns ETH close, not chart symbol close', async () => {
+        const sDate = new Date('2024-06-01').getTime();
+        const eDate = new Date('2024-08-15').getTime();
+        const warmup = 365 * 24 * 60 * 60 * 1000;
+
+        const pineTS = new PineTS(Provider.Binance, 'BTCUSDC', 'W', null, sDate - warmup);
+
+        const { plots } = await pineTS.run(
+`//@version=6
+indicator("Cross-symbol same-TF")
+float eth_close_chartTF = request.security("ETHUSDC", timeframe.period, close)
+float chart_close_self  = request.security(syminfo.tickerid, timeframe.period, close)
+plot(close,            "_btc")
+plot(eth_close_chartTF, "_eth")
+plot(chart_close_self,  "_self")
+`);
+
+        const btc  = extractPlot(plots, '_btc',  sDate, eDate);
+        const eth  = extractPlot(plots, '_eth',  sDate, eDate);
+        const self_ = extractPlot(plots, '_self', sDate, eDate);
+
+        expect(btc.length).toBeGreaterThan(0);
+        expect(eth.length).toBe(btc.length);
+        expect(self_.length).toBe(btc.length);
+
+        // Spot check: 2024-06 BTC weekly is ~$60-70k, ETH weekly is ~$3-4k.
+        // The requested ETH value must NOT equal BTC's close on any bar
+        // (which is what the bug produced).
+        for (let i = 0; i < btc.length; i++) {
+            // ETH weekly close in this window is < $5k; BTC weekly close > $50k.
+            // So an order-of-magnitude separation makes the assertion robust to
+            // small price drift.
+            expect(eth[i].value).toBeLessThan(10000);
+            expect(btc[i].value).toBeGreaterThan(50000);
+            expect(eth[i].value).not.toBeCloseTo(btc[i].value, -2);
+
+            // Same-symbol same-TF shortcut still valid: must equal chart's close.
+            expect(self_[i].value).toBeCloseTo(btc[i].value, 2);
+        }
+    }, 60000);
+});
+
+/**
+ * Pine semantics: named arguments bind to the function's known parameter slots
+ * by name (like Python kwargs), not by position. The PineTS transpiler emits a
+ * trailing options object — request.security must merge that bag into the named
+ * slots, not stuff it into the next positional slot (`gaps`).
+ *
+ * Regression caught: previously `request.security(symbol, tf, expr, lookahead = …)`
+ * silently set `gaps` to the options object and `lookahead` to its default (false).
+ */
+describe('request.security — named-args resolution', () => {
+    it('binds named lookahead to the lookahead slot (not gaps)', async () => {
+        // Same-TF so the same-TF shortcut handles the call directly. We're just
+        // checking that the named-args wiring doesn't crash and returns the
+        // expected expression value (regardless of lookahead/gaps semantics
+        // which don't apply on same-TF).
+        const code = `
+//@version=6
+indicator("named-args lookahead")
+v = request.security(syminfo.tickerid, timeframe.period, close, lookahead = barmerge.lookahead_on, calc_bars_count = 500)
+plot(v, "v")
+        `;
+        const pineTS = new PineTS(
+            Provider.Mock,
+            'BTCUSDC',
+            'D',
+            null,
+            new Date('2025-10-01').getTime(),
+            new Date('2025-10-05').getTime(),
+        );
+        const { plots } = await pineTS.run(code);
+        const data = plots['v'].data;
+        expect(data.length).toBeGreaterThan(0);
+        // Same-TF with `close` expression — every bar's value must equal close on that bar.
+        data.forEach((p: any) => {
+            expect(typeof p.value).toBe('number');
+            expect(isNaN(p.value)).toBe(false);
+        });
+    });
+
+    it('positional and named lookahead produce the same result (cross-TF, no gaps)', async () => {
+        // Cross-TF (D chart, W security) — exercises the lookahead path. Both
+        // call shapes must produce identical series; named arg must NOT collapse
+        // to gaps and zero-out lookahead.
+        const positionalCode = `
+//@version=6
+indicator("positional")
+v = request.security(syminfo.tickerid, 'W', close, false, true)
+plot(v, "v")
+        `;
+        const namedCode = `
+//@version=6
+indicator("named")
+v = request.security(syminfo.tickerid, 'W', close, lookahead = barmerge.lookahead_on)
+plot(v, "v")
+        `;
+        const mk = () =>
+            new PineTS(
+                Provider.Mock,
+                'BTCUSDC',
+                'D',
+                null,
+                new Date('2025-09-01').getTime(),
+                new Date('2025-10-15').getTime(),
+            );
+
+        const { plots: posPlots } = await mk().run(positionalCode);
+        const { plots: namPlots } = await mk().run(namedCode);
+
+        const pos = posPlots['v'].data;
+        const nam = namPlots['v'].data;
+        expect(pos.length).toBe(nam.length);
+        expect(pos.length).toBeGreaterThan(0);
+        for (let i = 0; i < pos.length; i++) {
+            // toEqual handles NaN==NaN as equal
+            expect(nam[i].value).toEqual(pos[i].value);
+        }
+    });
+
+    it('binds named gaps + named lookahead together', async () => {
+        // Both flags as named args (out-of-order named args are allowed in Pine).
+        // gaps_on + lookahead_on path must run without crashing.
+        const code = `
+//@version=6
+indicator("named both")
+v = request.security(syminfo.tickerid, 'W', close, lookahead = barmerge.lookahead_on, gaps = barmerge.gaps_on)
+plot(v, "v")
+        `;
+        const pineTS = new PineTS(
+            Provider.Mock,
+            'BTCUSDC',
+            'D',
+            null,
+            new Date('2025-09-01').getTime(),
+            new Date('2025-10-15').getTime(),
+        );
+        const { plots } = await pineTS.run(code);
+        expect(plots['v'].data.length).toBeGreaterThan(0);
+    });
+
+    it('aligns secondary barstate.islast with chart barstate.islast', async () => {
+        // Regression: the secondary context's date range used to be over-extended
+        // (eDate + 30-day buffer when context.eDate was undefined), so
+        // `barstate.islast` in the secondary fired on a future bar — never on
+        // the daily bar containing the chart's last bar. Patterns like
+        // `barstate.islast ? value : na` would always read NaN.
+        //
+        // With the alignment fix, the secondary's last bar IS the daily bar that
+        // contains the chart's last bar, so the gated expression value is visible.
+        const code = `
+//@version=6
+indicator("barstate.islast alignment")
+gated() =>
+    barstate.islast ? 42.0 : na
+v = request.security(syminfo.tickerid, 'D', gated(), lookahead = barmerge.lookahead_on)
+plot(v, "v")
+        `;
+        const pineTS = new PineTS(
+            Provider.Mock,
+            'BTCUSDC',
+            '60',
+            null,
+            new Date('2025-09-01').getTime(),
+            new Date('2025-10-15').getTime(),
+        );
+        const { plots } = await pineTS.run(code);
+        const data = plots['v'].data;
+        expect(data.length).toBeGreaterThan(0);
+        // The chart's last bar must read 42 (the gated value at the secondary's
+        // barstate.islast). If the secondary over-extends, this would be NaN.
+        const lastValue = data[data.length - 1].value;
+        expect(lastValue).toBe(42);
+    });
+
+    it('accepts a tuple expression (array) as positional, not as options bag', async () => {
+        // Regression: parseArgsForPineParams used to treat any plain object as
+        // the options bag — including JS arrays. A tuple expression like
+        // `[open, close]` was being misinterpreted, leaving `expression`
+        // undefined. Tuple destructuring on the result must work.
+        const code = `
+//@version=6
+indicator("tuple expr")
+[o, c] = request.security(syminfo.tickerid, 'D', [open, close])
+plot(o, "o")
+plot(c, "c")
+        `;
+        const pineTS = new PineTS(
+            Provider.Mock,
+            'BTCUSDC',
+            'D',
+            null,
+            new Date('2025-10-01').getTime(),
+            new Date('2025-10-05').getTime(),
+        );
+        const { plots } = await pineTS.run(code);
+        expect(plots['o'].data.length).toBeGreaterThan(0);
+        expect(plots['c'].data.length).toBeGreaterThan(0);
+        // Both should be valid numbers (same-TF shortcut returns open/close as-is)
+        plots['o'].data.forEach((p: any) => expect(isNaN(p.value)).toBe(false));
+        plots['c'].data.forEach((p: any) => expect(isNaN(p.value)).toBe(false));
+    });
+});

@@ -4,6 +4,7 @@
 import * as walk from 'acorn-walk';
 import ScopeManager from '../analysis/ScopeManager';
 import { ASTFactory, CONTEXT_NAME } from '../utils/ASTFactory';
+import { NAMESPACES_LIKE, FACTORY_METHODS } from '../settings';
 import {
     transformIdentifier,
     transformCallExpression,
@@ -13,6 +14,55 @@ import {
     createScopedVariableReference,
     createScopedVariableAccess,
 } from './ExpressionTransformer';
+
+/**
+ * Creates the AST nodes for a loop guard:
+ * 1. A counter declaration: `let __lgN = 0;` (to be hoisted before the loop)
+ * 2. A guard check: `if (++__lgN > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lgN)");`
+ *    (to be prepended to the loop body)
+ */
+export function createLoopGuardNodes(guardName: string): { counterDecl: any; guardCheck: any } {
+    // let __lgN = 0;
+    const counterDecl = {
+        type: 'VariableDeclaration',
+        kind: 'let',
+        declarations: [{
+            type: 'VariableDeclarator',
+            id: { type: 'Identifier', name: guardName },
+            init: { type: 'Literal', value: 0 },
+        }],
+    };
+
+    // if (++__lgN > __maxLoops) throw new Error("Loop exceeded maximum iterations (__lgN)");
+    const guardCheck = {
+        type: 'IfStatement',
+        test: {
+            type: 'BinaryExpression',
+            operator: '>',
+            left: {
+                type: 'UpdateExpression',
+                operator: '++',
+                prefix: true,
+                argument: { type: 'Identifier', name: guardName },
+            },
+            right: { type: 'Identifier', name: '__maxLoops' },
+        },
+        consequent: {
+            type: 'ThrowStatement',
+            argument: {
+                type: 'NewExpression',
+                callee: { type: 'Identifier', name: 'Error' },
+                arguments: [{
+                    type: 'Literal',
+                    value: `Loop exceeded maximum iterations (${guardName})`,
+                }],
+            },
+        },
+        alternate: null,
+    };
+
+    return { counterDecl, guardCheck };
+}
 
 export function transformAssignmentExpression(node: any, scopeManager: ScopeManager): void {
     let targetVarRef = null;
@@ -35,21 +85,39 @@ export function transformAssignmentExpression(node: any, scopeManager: ScopeMana
             }
         }
     } else if (node.left.type === 'MemberExpression' && !node.left.computed) {
-        // Assignment to object property: obj.property = val
-        // Transform the object identifier if it's a user variable
-        if (node.left.object.type === 'Identifier') {
-            const name = node.left.object.name;
+        // Assignment to object property: obj.property = val  OR  obj.a.b = val (nested)
+        // Walk the member expression chain to find the root Identifier and transform it
+        let rootOwner: any = null; // the node whose .object is the root Identifier
+        let cursor = node.left;
+        while (cursor.type === 'MemberExpression' && !cursor.computed) {
+            if (cursor.object.type === 'Identifier') {
+                rootOwner = cursor;
+                break;
+            }
+            cursor = cursor.object;
+        }
+
+        if (rootOwner) {
+            const name = rootOwner.object.name;
             const [varName, kind] = scopeManager.getVariable(name);
             const isRenamed = varName !== name;
 
             // Only transform if the variable has been renamed (i.e., it's a user-defined variable)
             // Context-bound variables that are NOT renamed (like 'display', 'ta', 'input') should NOT be transformed
             if (isRenamed && !scopeManager.isLoopVariable(name)) {
-                // Transform object to scoped variable reference with [0] access
-                // trade2.active = false  ->  $.get($.let.glb1_trade2, 0).active = false
+                // Transform root object to scoped variable reference with [0] access
+                // trade2.active = false       ->  $.get($.let.glb1_trade2, 0).active = false
+                // _outer.inner.value = close  ->  $.get($.var.glb1__outer, 0).inner.value = close
                 const contextVarRef = createScopedVariableReference(name, scopeManager);
                 const getCall = ASTFactory.createGetCall(contextVarRef, 0);
-                node.left.object = getCall;
+                rootOwner.object = getCall;
+            }
+            // Function parameters (local series vars) also need unwrapping for UDT field assignment:
+            // w.val = x  →  $.get(w, 0).val = x
+            else if (scopeManager.isLocalSeriesVar(name)) {
+                const plainId = ASTFactory.createIdentifier(name);
+                plainId._skipTransformation = true;
+                rootOwner.object = ASTFactory.createGetCall(plainId, 0);
             }
         }
     }
@@ -60,9 +128,32 @@ export function transformAssignmentExpression(node: any, scopeManager: ScopeMana
         { parent: node.right, inNamespaceCall: false },
         {
             Identifier(node: any, state: any, c: any) {
-                //special case for na
-                if (node.name == 'na') {
-                    node.name = 'NaN';
+                // Don't unwrap when the identifier is a namespace base in a
+                // constant access like `label.style_label_down`. NAMESPACES_LIKE
+                // mixes Series-wrapper names (time, na, dayofweek, …) with
+                // drawing namespaces (label, line, box, …); only the former
+                // have a .__value Series. For a member access where this
+                // identifier is the object, treat it as a plain namespace base.
+                const isNamespaceBase =
+                    state.parent &&
+                    state.parent.type === 'MemberExpression' &&
+                    !state.parent.computed &&
+                    state.parent.object === node;
+
+                // Rewrite NAMESPACES_LIKE entries (na, time, etc.) to $.get(__value, 0)
+                if (NAMESPACES_LIKE.includes(node.name) && scopeManager.isContextBound(node.name) && !isNamespaceBase) {
+                    const originalName = node.name;
+                    const valueExpr = {
+                        type: 'MemberExpression',
+                        object: { type: 'Identifier', name: originalName },
+                        property: { type: 'Identifier', name: '__value' },
+                        computed: false,
+                    };
+                    // Wrap in $.get() to extract current scalar value from Series
+                    const getCall = ASTFactory.createGetCall(valueExpr, 0);
+                    Object.assign(node, getCall);
+                    delete node.name;
+                    return;
                 }
                 node.parent = state.parent;
                 transformIdentifier(node, scopeManager);
@@ -111,6 +202,11 @@ export function transformAssignmentExpression(node: any, scopeManager: ScopeMana
 
                 if (node.type !== 'CallExpression') return;
 
+                // Traverse the callee if it's a MemberExpression (to handle obj.method())
+                if (node.callee.type === 'MemberExpression') {
+                    c(node.callee, { parent: node, inNamespaceCall: isNamespaceCall || state.inNamespaceCall });
+                }
+
                 // Then transform its arguments with the correct context
                 node.arguments.forEach((arg: any) => c(arg, { parent: node, inNamespaceCall: isNamespaceCall || state.inNamespaceCall }));
             },
@@ -154,9 +250,16 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
     if (varNode._skipTransformation) return;
 
     varNode.declarations.forEach((decl: any) => {
-        //special case for na
-        if (decl.init.name == 'na') {
-            decl.init.name = 'NaN';
+        // Rewrite NAMESPACES_LIKE entries (na, time, etc.) to .__value in variable initializers
+        if (decl.init && decl.init.type === 'Identifier' && NAMESPACES_LIKE.includes(decl.init.name) && scopeManager.isContextBound(decl.init.name)) {
+            const originalName = decl.init.name;
+            Object.assign(decl.init, {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: originalName },
+                property: { type: 'Identifier', name: '__value' },
+                computed: false,
+            });
+            delete decl.init.name;
         }
 
         // Check if this is a context property assignment
@@ -221,7 +324,15 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
         const newName = scopeManager.addVariable(decl.id.name, varNode.kind);
         const kind = varNode.kind; // 'const', 'let', or 'var'
 
-        const isArrayPatternVar = scopeManager.isArrayPatternElement(decl.id.name);
+        // Only treat as an array pattern variable when it actually has the destructured
+        // MemberExpression shape (e.g. _tmp_0[0]) from the AnalysisPass rewrite.
+        // The arrayPatternElements set is global (not scoped), so a same-named variable
+        // inside a function body may be falsely flagged — guard with a shape check.
+        const isArrayPatternVar =
+            scopeManager.isArrayPatternElement(decl.id.name) &&
+            decl.init &&
+            decl.init.type === 'MemberExpression' &&
+            decl.init.computed;
 
         // Transform identifiers in the init expression
         if (decl.init && !isArrowFunction && !isArrayPatternVar) {
@@ -281,6 +392,11 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
 
                             if (node.type !== 'CallExpression') return;
 
+                            // Traverse the callee if it's a MemberExpression (to handle obj.method())
+                            if (node.callee.type === 'MemberExpression') {
+                                c(node.callee, { parent: node });
+                            }
+
                             // Continue walking the arguments
                             node.arguments.forEach((arg) => c(arg, { parent: node }));
                         },
@@ -295,6 +411,25 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
                             // Transform both operands
                             c(node.left, { parent: node });
                             c(node.right, { parent: node });
+                        },
+                        // LogicalExpression (`and`/`or`) and UnaryExpression
+                        // (`not`/unary `-`) need explicit visitors here so the
+                        // parent reference threaded into their children is the
+                        // expression itself — not the surrounding decl.init.
+                        // Without this, an Identifier inside `not a and not b`
+                        // sees state.parent === LogicalExpression instead of
+                        // UnaryExpression, the "unwrap as series-operand" path
+                        // never fires, and the JS emits `!a && !b` (always
+                        // false because `a`/`b` are Series objects).
+                        LogicalExpression(node: any, state: any, c: any) {
+                            if (node.left.type === 'Identifier') node.left.parent = node;
+                            if (node.right.type === 'Identifier') node.right.parent = node;
+                            c(node.left, { parent: node });
+                            c(node.right, { parent: node });
+                        },
+                        UnaryExpression(node: any, state: any, c: any) {
+                            if (node.argument.type === 'Identifier') node.argument.parent = node;
+                            c(node.argument, { parent: node });
                         },
                         MemberExpression(node: any, state: any, c: any) {
                             // Set parent reference
@@ -338,7 +473,7 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
                                     const newBody: any[] = [];
                                     node.body.body.forEach((stmt: any) => {
                                         scopeManager.enterHoistingScope();
-                                        c(stmt, { parent: node.body });
+                                        c(stmt, { parent: node.body, insideIIFE: true });
                                         const hoistedStmts = scopeManager.exitHoistingScope();
                                         newBody.push(...hoistedStmts);
                                         newBody.push(stmt);
@@ -346,7 +481,7 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
                                     node.body.body = newBody;
                                 } else {
                                     // For expression body, traverse the expression
-                                    c(node.body, { parent: node });
+                                    c(node.body, { parent: node, insideIIFE: true });
                                 }
                             }
                         },
@@ -356,7 +491,7 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
                                 const newBody: any[] = [];
                                 node.body.body.forEach((stmt: any) => {
                                     scopeManager.enterHoistingScope();
-                                    c(stmt, { parent: node.body });
+                                    c(stmt, { parent: node.body, insideIIFE: true });
                                     const hoistedStmts = scopeManager.exitHoistingScope();
                                     newBody.push(...hoistedStmts);
                                     newBody.push(stmt);
@@ -397,6 +532,24 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
                                 node.consequent = newConsequent;
                             }
                         },
+                        AssignmentExpression(node: any, state: any, c: any) {
+                            // Only transform assignment expressions inside IIFEs (e.g., while/for-as-expression)
+                            // Don't transform assignments used as sub-expressions in normal initializers
+                            // (e.g., let result = (val = 10) + 5 — the (val = 10) must remain a JS assignment)
+                            if (!state.insideIIFE) return;
+
+                            // Skip local IIFE variables (like __result) that aren't registered Pine Script vars
+                            if (node.left.type === 'Identifier') {
+                                const [scopedName] = scopeManager.getVariable(node.left.name);
+                                if (scopedName === node.left.name && !scopeManager.isContextBound(node.left.name)) {
+                                    // Unknown local variable — don't transform the assignment,
+                                    // but still traverse the right-hand side for identifier transformations
+                                    c(node.right, { parent: node });
+                                    return;
+                                }
+                            }
+                            transformAssignmentExpression(node, scopeManager);
+                        },
                     }
                 );
             }
@@ -418,6 +571,52 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
             if (!decl.init.property._indexTransformed) {
                 transformArrayIndex(decl.init.property, scopeManager);
                 decl.init.property._indexTransformed = true;
+            }
+        }
+
+        // For `var` declarations, wrap any hoisted factory method calls in arrow
+        // functions so they are only evaluated on bar 0 (deferred via initVar thunk).
+        // This prevents side effects (e.g. line.new() creating orphan objects) from
+        // firing on every bar when the result is discarded by initVar on bars 1+.
+        if (kind === 'var') {
+            const hoistingScope = scopeManager.getCurrentHoistingScope();
+            if (hoistingScope) {
+                for (const stmt of hoistingScope) {
+                    if (stmt.type !== 'VariableDeclaration') continue;
+                    for (const d of stmt.declarations) {
+                        if (!d.init || d.init.type !== 'CallExpression') continue;
+                        const callee = d.init.callee;
+                        if (callee?.type !== 'MemberExpression') continue;
+
+                        let namespaceName: string | undefined;
+                        const methodName = callee.property?.name;
+
+                        // Match untransformed form: line.new(...)
+                        // callee = MemberExpression(Identifier('line'), Identifier('new'))
+                        if (callee.object?.type === 'Identifier') {
+                            namespaceName = callee.object.name;
+                        }
+                        // Match transformed form: $.pine.line.new(...)
+                        // callee = MemberExpression(MemberExpression(..., 'line'), Identifier('new'))
+                        else if (callee.object?.type === 'MemberExpression' && callee.object.property?.name) {
+                            namespaceName = callee.object.property.name;
+                        }
+
+                        if (namespaceName && methodName) {
+                            const methodPath = `${namespaceName}.${methodName}`;
+                            if (FACTORY_METHODS.includes(methodPath)) {
+                                // Wrap: `const temp = call(...)` → `const temp = () => call(...)`
+                                d.init = {
+                                    type: 'ArrowFunctionExpression',
+                                    params: [],
+                                    body: d.init,
+                                    expression: true,
+                                    async: false,
+                                };
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -447,7 +646,6 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
             // 1. Use $.get(tempVar, 0) to get the current value from the Series
             // 2. Then access the array element [index]
 
-            // We skipped transformation for decl.init, so it's still a MemberExpression (temp[index])
             const tempVarName = decl.init.object.name;
             const tempVarRef = createScopedVariableReference(tempVarName, scopeManager);
             const arrayIndex = decl.init.property.value;
@@ -477,6 +675,15 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
             walk.recursive(decl.init.body, scopeManager, {
                 IfStatement(node: any, state: ScopeManager, c: any) {
                     state.pushScope('if');
+                    // Transform the test condition. Without this, an if-test
+                    // inside an arrow-function body never gets walked — the
+                    // function-arg-unwrap path is skipped, and patterns like
+                    // `if not a and not b` (very common in Pine) emit JS
+                    // `if (!a && !b)` where `a`/`b` are Series objects (always
+                    // truthy → `!Series === false` → branch never taken).
+                    if (node.test) {
+                        transformExpression(node.test, state);
+                    }
                     c(node.consequent, state);
                     if (node.alternate) {
                         state.pushScope('els');
@@ -563,19 +770,44 @@ export function transformForStatement(node: any, scopeManager: ScopeManager, c: 
         };
 
         // Transform any identifiers in the init expression
+        // Must wrap Series identifiers in $.get() so the loop variable receives
+        // the concrete value, not a raw Series object (e.g. `for i = bar_index to 0`).
         if (decl.init) {
             walk.recursive(decl.init, scopeManager, {
                 Identifier(node: any, state: ScopeManager) {
-                    if (!scopeManager.isLoopVariable(node.name)) {
+                    if (!scopeManager.isLoopVariable(node.name) && !node.computed) {
                         scopeManager.pushScope('for');
                         transformIdentifier(node, state);
+                        if (node.type === 'Identifier') {
+                            const isNamespaceObject =
+                                scopeManager.isContextBound(node.name) &&
+                                node.parent &&
+                                node.parent.type === 'MemberExpression' &&
+                                node.parent.object === node;
+                            if (!isNamespaceObject) {
+                                node.computed = true;
+                                addArrayAccess(node, state);
+                            }
+                        }
                         scopeManager.popScope();
                     }
                 },
-                MemberExpression(node: any) {
+                MemberExpression(node: any, state: ScopeManager, c: any) {
                     scopeManager.pushScope('for');
                     transformMemberExpression(node, '', scopeManager);
                     scopeManager.popScope();
+                    if (node.type === 'MemberExpression' && node.object) {
+                        if (node.object.type !== 'Identifier' || !scopeManager.isContextBound(node.object.name)) {
+                            c(node.object, state);
+                        }
+                    }
+                },
+                CallExpression(node: any, state: ScopeManager, c: any) {
+                    node.callee.parent = node;
+                    c(node.callee, state);
+                    for (const arg of node.arguments) {
+                        c(arg, state);
+                    }
                 },
             });
         }
@@ -589,28 +821,90 @@ export function transformForStatement(node: any, scopeManager: ScopeManager, c: 
                     scopeManager.pushScope('for');
                     transformIdentifier(node, state);
                     if (node.type === 'Identifier') {
-                        node.computed = true;
-                        addArrayAccess(node, state);
+                        // Skip $.get() wrapping for namespace objects used as MemberExpression
+                        // objects (e.g. math in math.min(), array in array.size()).
+                        // These are namespace objects, not series variables.
+                        const isNamespaceObject =
+                            scopeManager.isContextBound(node.name) &&
+                            node.parent &&
+                            node.parent.type === 'MemberExpression' &&
+                            node.parent.object === node;
+                        if (!isNamespaceObject) {
+                            node.computed = true;
+                            addArrayAccess(node, state);
+                        }
                     }
                     scopeManager.popScope();
                 }
             },
-            MemberExpression(node: any) {
+            MemberExpression(node: any, state: ScopeManager, c: any) {
                 scopeManager.pushScope('for');
                 transformMemberExpression(node, '', scopeManager);
                 scopeManager.popScope();
+                // If still a MemberExpression after transformation, recurse into the
+                // object so user variable identifiers (e.g. lineMatrix in
+                // lineMatrix.rows()) get transformed via the Identifier handler.
+                // Skip recursion for context-bound namespace objects (math, array, ta, etc.)
+                // — they are namespace objects, not series variables, and must not get $.get() wrapping.
+                if (node.type === 'MemberExpression' && node.object) {
+                    if (node.object.type !== 'Identifier' || !scopeManager.isContextBound(node.object.name)) {
+                        c(node.object, state);
+                    }
+                }
+            },
+            CallExpression(node: any, state: ScopeManager, c: any) {
+                // Set parent on callee so transformMemberExpression knows it's already being called
+                // (prevents auto-call conversion: e.g. array.size -> array.size())
+                node.callee.parent = node;
+                c(node.callee, state);
+                // Traverse arguments so identifiers get $.get() wrapping
+                for (const arg of node.arguments) {
+                    c(arg, state);
+                }
             },
         });
     }
 
     // Transform update expression
+    // Must mirror the test condition walker: wrap Series identifiers in $.get(),
+    // handle MemberExpression chains and CallExpression arguments.
+    // Without this, `for i = 0 to bar_index - X` produces raw Series objects
+    // in the update ternary, causing NaN comparisons and infinite loops.
     if (node.update) {
         walk.recursive(node.update, scopeManager, {
             Identifier(node: any, state: ScopeManager) {
-                if (!scopeManager.isLoopVariable(node.name)) {
+                if (!scopeManager.isLoopVariable(node.name) && !node.computed) {
                     scopeManager.pushScope('for');
                     transformIdentifier(node, state);
+                    if (node.type === 'Identifier') {
+                        const isNamespaceObject =
+                            scopeManager.isContextBound(node.name) &&
+                            node.parent &&
+                            node.parent.type === 'MemberExpression' &&
+                            node.parent.object === node;
+                        if (!isNamespaceObject) {
+                            node.computed = true;
+                            addArrayAccess(node, state);
+                        }
+                    }
                     scopeManager.popScope();
+                }
+            },
+            MemberExpression(node: any, state: ScopeManager, c: any) {
+                scopeManager.pushScope('for');
+                transformMemberExpression(node, '', scopeManager);
+                scopeManager.popScope();
+                if (node.type === 'MemberExpression' && node.object) {
+                    if (node.object.type !== 'Identifier' || !scopeManager.isContextBound(node.object.name)) {
+                        c(node.object, state);
+                    }
+                }
+            },
+            CallExpression(node: any, state: ScopeManager, c: any) {
+                node.callee.parent = node;
+                c(node.callee, state);
+                for (const arg of node.arguments) {
+                    c(arg, state);
                 }
             },
         });
@@ -618,38 +912,168 @@ export function transformForStatement(node: any, scopeManager: ScopeManager, c: 
 
     // Transform the loop body
     scopeManager.setSuppressHoisting(false);
+
+    // Inject loop guard: hoist counter declaration before the loop
+    const forGuardName = scopeManager.getNextLoopGuardName();
+    const forGuard = createLoopGuardNodes(forGuardName);
+    scopeManager.addHoistedStatement(forGuard.counterDecl);
+
     scopeManager.pushScope('for');
     c(node.body, scopeManager);
     scopeManager.popScope();
+
+    // Prepend guard check as the first statement in the loop body
+    if (node.body.type === 'BlockStatement') {
+        node.body.body.unshift(forGuard.guardCheck);
+    }
+
+    // Clean up loop variable so it doesn't leak to outer scope
+    // (prevents shadowing issues when the same name is reused later)
+    if (node.init && node.init.type === 'VariableDeclaration') {
+        const decl = node.init.declarations[0];
+        scopeManager.removeLoopVariable(decl.id.name);
+    }
 }
 
 export function transformWhileStatement(node: any, scopeManager: ScopeManager, c: any): void {
+    // While-loop test conditions must NOT be hoisted — they're re-evaluated each iteration.
+    // Suppress hoisting so namespace calls like array.size() stay inline.
     scopeManager.setSuppressHoisting(true);
-    // Transform the test condition of the while loop
-    walk.simple(node.test, {
-        Identifier(idNode: any) {
-            transformIdentifier(idNode, scopeManager);
-        },
-    });
+
+    // Transform the test condition
+    // Must wrap Series identifiers in $.get() so comparisons use concrete
+    // values, not raw Series objects (e.g. `while bar_index > cnt`).
+    if (node.test) {
+        walk.recursive(node.test, scopeManager, {
+            Identifier(node: any, state: ScopeManager) {
+                if (!node.computed) {
+                    transformIdentifier(node, state);
+                    if (node.type === 'Identifier') {
+                        const isNamespaceObject =
+                            scopeManager.isContextBound(node.name) &&
+                            node.parent &&
+                            node.parent.type === 'MemberExpression' &&
+                            node.parent.object === node;
+                        if (!isNamespaceObject) {
+                            node.computed = true;
+                            addArrayAccess(node, state);
+                        }
+                    }
+                }
+            },
+            MemberExpression(node: any, state: ScopeManager, c: any) {
+                transformMemberExpression(node, '', scopeManager);
+                // Recurse into non-namespace objects for user variable resolution
+                if (node.type === 'MemberExpression' && node.object) {
+                    if (node.object.type !== 'Identifier' || !scopeManager.isContextBound(node.object.name)) {
+                        c(node.object, state);
+                    }
+                }
+            },
+            CallExpression(node: any, state: ScopeManager, c: any) {
+                // Transform namespace method calls inline (no hoisting)
+                node.callee.parent = node;
+                c(node.callee, state);
+                transformCallExpression(node, state);
+                // Also traverse arguments
+                if (node.arguments) {
+                    for (const arg of node.arguments) {
+                        c(arg, state);
+                    }
+                }
+            },
+        });
+    }
+
     scopeManager.setSuppressHoisting(false);
+
+    // Inject loop guard: hoist counter declaration before the loop
+    const whileGuardName = scopeManager.getNextLoopGuardName();
+    const whileGuard = createLoopGuardNodes(whileGuardName);
+    scopeManager.addHoistedStatement(whileGuard.counterDecl);
 
     // Process the body of the while loop
     scopeManager.pushScope('whl');
     c(node.body, scopeManager);
     scopeManager.popScope();
+
+    // Prepend guard check as the first statement in the loop body
+    if (node.body.type === 'BlockStatement') {
+        node.body.body.unshift(whileGuard.guardCheck);
+    }
 }
 
 export function transformExpression(node: any, scopeManager: ScopeManager): void {
     walk.recursive(node, scopeManager, {
-        MemberExpression(node: any) {
+        MemberExpression(node: any, state: ScopeManager, c: any) {
+            // Recurse into non-context-bound Identifier objects for DOT access only
+            // (e.g. Signal.Buy where Signal is an enum). Skip computed/bracket access
+            // (e.g. aa[0]) — those are handled by transformArrayIndex inside
+            // transformMemberExpression, which needs the object as a raw Identifier.
+            if (node.object && node.object.type === 'Identifier'
+                && !scopeManager.isContextBound(node.object.name)
+                && !node.computed) {
+                node.object.parent = node;
+                c(node.object, state);
+            }
             transformMemberExpression(node, '', scopeManager);
         },
 
         CallExpression(node: any, state: ScopeManager) {
             transformCallExpression(node, state);
         },
+        // BinaryExpression / LogicalExpression / UnaryExpression need explicit
+        // visitors here so parent references are threaded into the operand
+        // identifiers. Without this, an Identifier inside `not a and not b`
+        // (a common Pine pattern in if-conditions) ends up with `node.parent`
+        // pointing at the outer LogicalExpression — or at nothing at all —
+        // and `transformIdentifier` skips its localSeriesVar unwrap because
+        // the `is(NamespaceMember|ParamCall|SeriesFunctionArg|...)` guards
+        // misclassify the node. The result is JS like `!a && !b`, which
+        // always evaluates to `false` because `a`/`b` are Series objects.
+        BinaryExpression(node: any, state: ScopeManager, c: any) {
+            if (node.left.type === 'Identifier') node.left.parent = node;
+            if (node.right.type === 'Identifier') node.right.parent = node;
+            c(node.left, state);
+            c(node.right, state);
+        },
+        LogicalExpression(node: any, state: ScopeManager, c: any) {
+            if (node.left.type === 'Identifier') node.left.parent = node;
+            if (node.right.type === 'Identifier') node.right.parent = node;
+            c(node.left, state);
+            c(node.right, state);
+        },
+        UnaryExpression(node: any, state: ScopeManager, c: any) {
+            if (node.argument.type === 'Identifier') node.argument.parent = node;
+            c(node.argument, state);
+        },
         Identifier(node: any, state: ScopeManager) {
+            // Capture parent BEFORE transformIdentifier mutates `node` in
+            // place (Object.assign overwrites node.parent on rewrites such as
+            // wrap-in-$.get).
+            const parent = node.parent;
+            const isUnary = parent && parent.type === 'UnaryExpression';
+            const isBinary = parent && parent.type === 'BinaryExpression';
+            const isLogical = parent && parent.type === 'LogicalExpression';
+            const isConditional = parent && parent.type === 'ConditionalExpression';
+
             transformIdentifier(node, state);
+
+            // After identifier rewrite, if the node still looks like a bare
+            // Identifier sitting under a `not`/`and`/`or`/binary/conditional
+            // expression, force-wrap it with `$.get(..., 0)` so function-
+            // parameter Series get unwrapped to scalars before the operator
+            // applies. Without this, `if not a and not b` (with `a`/`b` as
+            // bool fn params) emits `!a && !b` — Series objects are truthy,
+            // so `!Series === false` and the branch is never taken.
+            if (node.type === 'Identifier' && (isUnary || isBinary || isLogical || isConditional)) {
+                const isGetCall = parent && parent.type === 'CallExpression' && parent.callee &&
+                    parent.callee.object && parent.callee.object.name === CONTEXT_NAME &&
+                    parent.callee.property?.name === 'get';
+                if (!isGetCall) {
+                    addArrayAccess(node, state);
+                }
+            }
 
             //context bound variable was not transformed, but we still need to ensure array annotation
             const isIfStatement = scopeManager.getCurrentScopeType() === 'if';
@@ -726,6 +1150,40 @@ export function transformReturnStatement(node: any, scopeManager: ScopeManager):
                     // Otherwise, transform it normally
                     transformMemberExpression(element, '', scopeManager);
                     return element;
+                } else if (
+                    element.type === 'BinaryExpression' ||
+                    element.type === 'LogicalExpression' ||
+                    element.type === 'ConditionalExpression' ||
+                    element.type === 'CallExpression' ||
+                    element.type === 'UnaryExpression'
+                ) {
+                    // Walk into complex expressions and transform identifiers/members
+                    walk.recursive(element, scopeManager, {
+                        Identifier(node: any, state: ScopeManager) {
+                            transformIdentifier(node, state);
+                            if (node.type === 'Identifier' && !node._arrayAccessed) {
+                                addArrayAccess(node, state);
+                                node._arrayAccessed = true;
+                            }
+                        },
+                        MemberExpression(node: any) {
+                            transformMemberExpression(node, '', scopeManager);
+                        },
+                        CallExpression(node: any, state: ScopeManager, c: any) {
+                            if (node.callee.type === 'ArrowFunctionExpression' || node.callee.type === 'FunctionExpression') {
+                                c(node.callee, state);
+                            }
+                            transformCallExpression(node, state);
+                            if (node.type === 'CallExpression') {
+                                node.arguments.forEach((arg: any) => c(arg, state));
+                            }
+                        },
+                        BinaryExpression(node: any, state: any, c: any) {
+                            c(node.left, state);
+                            c(node.right, state);
+                        },
+                    });
+                    return element;
                 }
                 return element;
             });
@@ -779,6 +1237,33 @@ export function transformReturnStatement(node: any, scopeManager: ScopeManager):
             if (node.argument.type === 'Identifier') {
                 addArrayAccess(node.argument, scopeManager);
             }
+        } else if (node.argument.type === 'MemberExpression') {
+            // Handle non-context-bound member expressions (e.g. return Signal.Buy)
+            // where the object is a user-defined variable (enum, struct, etc.)
+            if (
+                node.argument.object.type === 'Identifier' &&
+                !scopeManager.isContextBound(node.argument.object.name) &&
+                !scopeManager.isLoopVariable(node.argument.object.name)
+            ) {
+                transformIdentifier(node.argument.object, scopeManager);
+            }
+            // UDT-field subscript on a function parameter: `return b.field[N]`
+            // where `b` is a UDT-typed parameter. The chain's leaf must be a
+            // registered UDT instance for the rewrite to fire — see
+            // `transformFunctionDeclaration` for scope-local registration.
+            else if (
+                node.argument.computed &&
+                node.argument.object.type === 'MemberExpression'
+            ) {
+                let cursor: any = node.argument.object;
+                while (cursor.object && cursor.object.type === 'MemberExpression') {
+                    cursor = cursor.object;
+                }
+                if (cursor.object?.type === 'Identifier' &&
+                    scopeManager.isUdtInstance(cursor.object.name)) {
+                    transformMemberExpression(node.argument, '', scopeManager);
+                }
+            }
         }
 
         if (curScope === 'fn') {
@@ -808,7 +1293,9 @@ export function transformReturnStatement(node: any, scopeManager: ScopeManager):
                 node.argument.type === 'BinaryExpression' ||
                 node.argument.type === 'LogicalExpression' ||
                 node.argument.type === 'ConditionalExpression' ||
-                node.argument.type === 'CallExpression'
+                node.argument.type === 'CallExpression' ||
+                node.argument.type === 'UnaryExpression' ||
+                node.argument.type === 'AssignmentExpression'
             ) {
                 // For complex expressions, walk the AST and transform all identifiers and expressions
                 walk.recursive(node.argument, scopeManager, {
@@ -822,6 +1309,16 @@ export function transformReturnStatement(node: any, scopeManager: ScopeManager):
                     },
                     MemberExpression(node: any) {
                         transformMemberExpression(node, '', scopeManager);
+                    },
+                    // When an arrow function's last statement is an assignment
+                    // (e.g. `tracker.field := …`), the parser folds it into the
+                    // implicit return as an AssignmentExpression. Without this
+                    // visitor, the default acorn-walk fall-through visits the
+                    // LHS as a MemberExpression — which doesn't rewrite the
+                    // root identifier of an assignment LHS — and `tracker`
+                    // leaks bare → "ReferenceError: tracker is not defined".
+                    AssignmentExpression(node: any, state: ScopeManager) {
+                        transformAssignmentExpression(node, state);
                     },
                     // c is the callback function for recursion (acorn-walk)
                     CallExpression(node: any, state: ScopeManager, c: any) {
@@ -940,25 +1437,58 @@ export function transformFunctionDeclaration(node: any, scopeManager: ScopeManag
         node.body.body.unshift(callIdDecl);
 
         scopeManager.pushScope('fn');
-        
-        // Register function parameters in the function scope
-        // They should be context-bound within this scope only
+
+        // Register function parameters as local series variables
+        // This ensures they:
+        // 1. Stay as plain identifiers (no renaming to $.let.scoped_name)
+        // 2. Get $.get() wrapping when used (e.g., X1.size() → $.get(X1, 0).size())
         node.params.forEach((param: any) => {
             if (param.type === 'Identifier') {
-                scopeManager.addContextBoundVar(param.name, false);
+                scopeManager.addLocalSeriesVar(param.name);
             }
         });
-        
+
+        // Scope-locally register any UDT-typed parameters (per
+        // `funcName.__pineParamTypes__` markers populated by AnalysisPass)
+        // so the use-site rewrite for `b.field[N]` fires inside the body.
+        // The names get unmarked when leaving function scope below.
+        // Methods carry a `$M_` JS-name prefix that's not used in the registry
+        // (which is keyed by the Pine name) — strip it before lookup.
+        const rawFnName = node.id?.name as string | undefined;
+        const fnName = rawFnName?.startsWith('$M_') ? rawFnName.slice(3) : rawFnName;
+        const paramTypes = fnName ? scopeManager.getFunctionParamUdtTypes(fnName) : undefined;
+        // Snapshot prior bindings for parameter names that shadow outer-scope
+        // UDT instances (e.g. `method touch(ZZ aZZ)` where `aZZ` is also a
+        // global UDT variable). Without this, the unmark on function exit
+        // would wipe the outer registration too, breaking later `aZZ.foo()`
+        // dispatches at the call site.
+        const savedUdtBindings: Record<string, string | undefined> = {};
+        if (paramTypes) {
+            for (const [paramName, typeName] of Object.entries(paramTypes)) {
+                savedUdtBindings[paramName] = scopeManager.getVariableUdtType(paramName);
+                scopeManager.markVariableAsUdtInstance(paramName, typeName);
+            }
+        }
+
         // Just delegate to the callback to continue the recursion
         c(node.body, scopeManager);
-        
-        // Clean up: remove parameters from context-bound after exiting function scope
+
+        // Clean up: remove function parameters from local series vars after exiting function scope
         node.params.forEach((param: any) => {
             if (param.type === 'Identifier') {
-                scopeManager.removeContextBoundVar(param.name);
+                scopeManager.removeLocalSeriesVar(param.name);
             }
         });
-        
+        if (paramTypes) {
+            for (const paramName of Object.keys(paramTypes)) {
+                scopeManager.unmarkVariableAsUdtInstance(paramName);
+                const prev = savedUdtBindings[paramName];
+                if (prev !== undefined) {
+                    scopeManager.markVariableAsUdtInstance(paramName, prev);
+                }
+            }
+        }
+
         scopeManager.popScope();
     }
 }

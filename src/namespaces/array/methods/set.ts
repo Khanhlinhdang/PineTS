@@ -13,6 +13,15 @@ export function set(context: Context) {
                 }' is expected.`
             );
         }
-        id.array[index] = context.precision(value);
+        // Pine Script v6: negative indices count backwards from the end.
+        if (index < 0) index = id.array.length + index;
+        if (index < 0 || index >= id.array.length) {
+            context.warn(
+                `Index ${index} is out of bounds, array size is ${id.array.length}.`,
+                'array.set'
+            );
+            return;
+        }
+        id.array[index] = typeof value === 'number' ? context.precision(value) : value;
     };
 }

@@ -6,11 +6,14 @@ import { PineArray } from './namespaces/array/array.index';
 import { PineMap } from './namespaces/map/map.index';
 import { PineMatrix } from './namespaces/matrix/matrix.index';
 import { Barstate } from './namespaces/Barstate';
-import { Core } from './namespaces/Core';
+import { Core, NAHelper, AlertHelper } from './namespaces/Core';
+import { PineColor } from './namespaces/color/PineColor';
+import { TimeHelper, TimeComponentHelper, EXTRACTORS, getDatePartsInTimezone } from './namespaces/Time';
 import { Input } from './namespaces/input/input.index';
 import PineMath from './namespaces/math/math.index';
 import { PineRequest } from './namespaces/request/request.index';
 import TechnicalAnalysis from './namespaces/ta/ta.index';
+import { PineTypeObject } from './namespaces/PineTypeObject';
 import { Strategy, StrategyState } from './namespaces/strategy/strategy.index';
 import { Series } from './Series';
 import { Log } from './namespaces/Log';
@@ -18,6 +21,15 @@ import { Str } from './namespaces/Str';
 import types, { display, shape } from './namespaces/Types';
 import { Timeframe } from './namespaces/Timeframe';
 import { FillHelper, HlineHelper, PlotHelper } from './namespaces/Plots';
+import { ChartHelper } from './namespaces/chart/ChartHelper';
+import { LabelHelper } from './namespaces/label/LabelHelper';
+import { LineHelper } from './namespaces/line/LineHelper';
+import { BoxHelper } from './namespaces/box/BoxHelper';
+import { LinefillHelper } from './namespaces/linefill/LinefillHelper';
+import { PolylineHelper } from './namespaces/polyline/PolylineHelper';
+import { TableHelper } from './namespaces/table/TableHelper';
+import { Ticker } from './namespaces/Ticker';
+import type { IndicatorOptions } from './types/PineTypes';
 
 export class Context {
     public data: any = {
@@ -30,16 +42,42 @@ export class Context {
         hlc3: new Series([]),
         ohlc4: new Series([]),
         hlcc4: new Series([]),
+        bar_index: new Series([]),
     };
     public indicator: IndicatorOptions;
     public cache: any = {};
     public taState: any = {}; // State for incremental TA calculations
     public strategy?: StrategyState; // State for strategy calculations
     public isSecondaryContext: boolean = false; // Flag to prevent infinite recursion in request.security
+    public chartTimezone: string | null = null; // Chart display timezone (affects log timestamps only, not computation)
+    public dataVersion: number = 0; // Incremented when market data changes (streaming mode)
 
+    public __maxLoops: number = 500000;
     public NA: any = NaN;
 
+    /** Runtime warnings (OOB access, etc.) — non-blocking, script continues. */
+    public warnings: { message: string; method?: string; bar: number }[] = [];
+
+    /** Alert events emitted by alert() and alertcondition() calls. */
+    public alerts: { type: string; id: string; message: string; title?: string; freq?: string; bar_index: number; time: number }[] = [];
+
+    /** Alert mode: 'realtime' = only fire on live bars (TV behavior), 'all' = fire on every bar (backtest). */
+    public _alertMode: 'realtime' | 'all' = 'realtime';
+
+    /** Monotonically increasing counter, incremented each time a bar starts executing.
+     *  Used by alertcondition/AlertHelper to detect re-execution of the same bar. */
+    public _execTick: number = 0;
+
+    /** Emit a runtime warning. The script continues execution (returns na/no-op). */
+    public warn(message: string, method?: string): void {
+        this.warnings.push({ message, method, bar: this.idx });
+    }
+
     public lang: any;
+    public length: number = 0;
+
+    /** References to drawing helpers for streaming rollback and plot sync */
+    public _drawingHelpers: { rollbackFromBar(barIdx: number): void; syncToPlot?(): void }[] = [];
 
     // Combined namespace and core functions - the default way to access everything
     public pine: {
@@ -87,6 +125,12 @@ export class Context {
     public eDate: number;
     public fullContext: Context;
 
+    // Host-bound viewport state. PineTS.setVisibleRange() flows these in via
+    // _initializeContext. Undefined means "no override" — ChartHelper falls
+    // back to marketData[0]/[last].openTime.
+    public viewportLeft: number | undefined = undefined;
+    public viewportRight: number | undefined = undefined;
+
     public pineTSCode: Function | String;
 
     public inputs: Record<string, any> = {};
@@ -127,15 +171,31 @@ export class Context {
         const coreFunctions = {
             Type: core.Type.bind(core),
 
-            na: core.na.bind(core),
-            color: core.color,
+            na: new NAHelper(),
 
             nz: core.nz.bind(core),
             indicator: core.indicator.bind(core),
             fixnan: core.fixnan.bind(core),
             alertcondition: core.alertcondition.bind(core),
+            alert: new AlertHelper(this),
+            error: core.error.bind(core),
+            max_bars_back: core.max_bars_back.bind(core),
+            timestamp: core.timestamp.bind(core),
+            time: new TimeHelper(this, 'openTime'),
+            time_close: new TimeHelper(this, 'closeTime'),
+            dayofmonth: new TimeComponentHelper(this, EXTRACTORS.dayofmonth),
+            dayofweek: new TimeComponentHelper(this, EXTRACTORS.dayofweek),
+            hour: new TimeComponentHelper(this, EXTRACTORS.hour),
+            minute: new TimeComponentHelper(this, EXTRACTORS.minute),
+            month: new TimeComponentHelper(this, EXTRACTORS.month),
+            second: new TimeComponentHelper(this, EXTRACTORS.second),
+            weekofyear: new TimeComponentHelper(this, EXTRACTORS.weekofyear),
+            year: new TimeComponentHelper(this, EXTRACTORS.year),
             //types
             bool: core.bool.bind(core),
+            int: core.int.bind(core),
+            float: core.float.bind(core),
+            string: core.string.bind(core),
         };
 
         // Initialize everything directly in pine - the default way to access everything
@@ -148,6 +208,7 @@ export class Context {
             array: new PineArray(this),
             map: new PineMap(this),
             matrix: new PineMatrix(this),
+            ticker: new Ticker(this),
             strategy: new Strategy(this),
 
             syminfo: null,
@@ -156,25 +217,54 @@ export class Context {
             //we need to implement a better way to handle realtime states
             barstate: new Barstate(this),
             get bar_index() {
-                return _this.idx;
+                return _this.data.bar_index;
             },
             get last_bar_index() {
                 return _this.data.close.length - 1;
             },
             get last_bar_time() {
-                return _this.data.openTime.get(_this.data.openTime.length - 1);
+                // TV semantics: `last_bar_time` is the open time of the LAST
+                // bar of the chart's history — a CONSTANT across the whole
+                // script execution, even when iterating over historical bars.
+                // PineTS has the full preloaded series on `marketData`, so we
+                // read the absolute last bar's openTime there. Falling back
+                // to the progressively-fed `data.openTime` (current bar's
+                // time) is best-effort if marketData isn't available.
+                const md = _this.marketData;
+                if (Array.isArray(md) && md.length > 0) {
+                    return md[md.length - 1].openTime;
+                }
+                return _this.data.openTime.get(0);
             },
             get timenow() {
                 return new Date().getTime();
+            },
+            get time_tradingday() {
+                // TradingView returns 00:00 UTC of the trading day the bar belongs to.
+                // For daily+ timeframes on 24/7 markets, this equals the bar's close date
+                // (i.e. the date the bar settles / completes).
+                const closeTime = Series.from(_this.data.closeTime).get(0);
+                if (isNaN(closeTime)) return NaN;
+                const timezone = _this.pine?.syminfo?.timezone || 'UTC';
+                const parts = getDatePartsInTimezone(closeTime, timezone);
+                return Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0);
             },
             get inputs() {
                 return _this.inputs;
             },
             log: new Log(this),
             str: new Str(this),
+            // linefill namespace will be bound below via bindContextObject
             ...coreFunctions,
             ...types,
         };
+
+        // Merge dayofweek enum constants onto the dual-use TimeComponentHelper.
+        // The ...types spread above overwrites coreFunctions.dayofweek with the enum,
+        // so we restore the TimeComponentHelper and attach the enum constants to it.
+        const dowComponent = coreFunctions.dayofweek as any;
+        Object.assign(dowComponent, { sunday: 1, monday: 2, tuesday: 3, wednesday: 4, thursday: 5, friday: 6, saturday: 7 });
+        this.pine.dayofweek = dowComponent;
 
         const plotHelper = new PlotHelper(this);
         const hlineHelper = new HlineHelper(this);
@@ -200,11 +290,276 @@ export class Context {
                 'style_stepline_diamond',
                 'style_steplinebr',
             ],
-            'plot'
+            'plot',
         );
 
         this.bindContextObject(hlineHelper, ['any', 'style_dashed', 'style_solid', 'style_dotted', 'param'], 'hline');
         this.bindContextObject(fillHelper, ['any', 'param'], 'fill');
+
+        // chart namespace (with nested chart.point sub-namespace)
+        const chartHelper = new ChartHelper(this);
+        this.pine['chart'] = {
+            param: chartHelper.param.bind(chartHelper),
+            bg_color: chartHelper.bg_color.bind(chartHelper),
+            fg_color: chartHelper.fg_color.bind(chartHelper),
+            is_standard: chartHelper.is_standard.bind(chartHelper),
+            is_heikinashi: chartHelper.is_heikinashi.bind(chartHelper),
+            is_kagi: chartHelper.is_kagi.bind(chartHelper),
+            is_linebreak: chartHelper.is_linebreak.bind(chartHelper),
+            is_pnf: chartHelper.is_pnf.bind(chartHelper),
+            is_range: chartHelper.is_range.bind(chartHelper),
+            is_renko: chartHelper.is_renko.bind(chartHelper),
+            point: chartHelper.point,
+            // Visible-range built-ins. Host (e.g. chart UI) overrides via
+            // PineTS.setVisibleRange(); fallback is the loaded data range.
+            get left_visible_bar_time() {
+                if (_this.viewportLeft !== undefined) return _this.viewportLeft;
+                const md = _this.marketData;
+                return Array.isArray(md) && md.length > 0 ? md[0].openTime : NaN;
+            },
+            get right_visible_bar_time() {
+                if (_this.viewportRight !== undefined) return _this.viewportRight;
+                const md = _this.marketData;
+                return Array.isArray(md) && md.length > 0 ? md[md.length - 1].openTime : NaN;
+            },
+        };
+
+        // label namespace
+        const labelHelper = new LabelHelper(this);
+        this.bindContextObject(
+            labelHelper,
+            [
+                'any',
+                'new',
+                'param',
+                'set_x',
+                'set_y',
+                'set_xy',
+                'set_text',
+                'set_color',
+                'set_textcolor',
+                'set_size',
+                'set_style',
+                'set_textalign',
+                'set_tooltip',
+                'set_point',
+                'set_xloc',
+                'set_yloc',
+                'get_x',
+                'get_y',
+                'get_text',
+                'copy',
+                'delete',
+                // style constants
+                'style_label_down',
+                'style_label_up',
+                'style_label_left',
+                'style_label_right',
+                'style_label_lower_left',
+                'style_label_lower_right',
+                'style_label_upper_left',
+                'style_label_upper_right',
+                'style_label_center',
+                'style_circle',
+                'style_square',
+                'style_diamond',
+                'style_flag',
+                'style_arrowup',
+                'style_arrowdown',
+                'style_cross',
+                'style_xcross',
+                'style_triangleup',
+                'style_triangledown',
+                'style_none',
+                'style_text_outline',
+            ],
+            'label',
+        );
+        Object.defineProperty(this.pine['label'], 'all', {
+            get: () => labelHelper.all,
+        });
+
+        // line namespace
+        const lineHelper = new LineHelper(this);
+        this.bindContextObject(
+            lineHelper,
+            [
+                'any',
+                'new',
+                'param',
+                'set_x1',
+                'set_y1',
+                'set_x2',
+                'set_y2',
+                'set_xy1',
+                'set_xy2',
+                'set_color',
+                'set_width',
+                'set_style',
+                'set_extend',
+                'set_xloc',
+                'set_first_point',
+                'set_second_point',
+                'get_x1',
+                'get_y1',
+                'get_x2',
+                'get_y2',
+                'get_price',
+                'copy',
+                'delete',
+                // style constants
+                'style_solid',
+                'style_dotted',
+                'style_dashed',
+                'style_arrow_left',
+                'style_arrow_right',
+                'style_arrow_both',
+            ],
+            'line',
+        );
+        Object.defineProperty(this.pine['line'], 'all', {
+            get: () => lineHelper.all,
+        });
+
+        // box namespace
+        const boxHelper = new BoxHelper(this);
+        this.bindContextObject(
+            boxHelper,
+            [
+                'any',
+                'new',
+                'param',
+                'copy',
+                'delete',
+                'set_left',
+                'set_right',
+                'set_top',
+                'set_bottom',
+                'set_lefttop',
+                'set_rightbottom',
+                'set_top_left_point',
+                'set_bottom_right_point',
+                'set_bgcolor',
+                'set_border_color',
+                'set_border_width',
+                'set_border_style',
+                'set_extend',
+                'set_xloc',
+                'set_text',
+                'set_text_color',
+                'set_text_size',
+                'set_text_halign',
+                'set_text_valign',
+                'set_text_wrap',
+                'set_text_font_family',
+                'set_text_formatting',
+                'get_left',
+                'get_right',
+                'get_top',
+                'get_bottom',
+            ],
+            'box',
+        );
+        Object.defineProperty(this.pine['box'], 'all', {
+            get: () => boxHelper.all,
+        });
+
+        // linefill namespace
+        const linefillHelper = new LinefillHelper(this);
+        this.bindContextObject(linefillHelper, ['any', 'new', 'param', 'set_color', 'get_line1', 'get_line2', 'delete'], 'linefill');
+        Object.defineProperty(this.pine['linefill'], 'all', {
+            get: () => linefillHelper.all,
+        });
+
+        // polyline namespace
+        const polylineHelper = new PolylineHelper(this);
+        this.bindContextObject(polylineHelper, ['any', 'new', 'param', 'delete'], 'polyline');
+        Object.defineProperty(this.pine['polyline'], 'all', {
+            get: () => polylineHelper.all,
+        });
+
+        // table namespace
+        const tableHelper = new TableHelper(this);
+        this.bindContextObject(
+            tableHelper,
+            [
+                'any',
+                'new',
+                'param',
+                'cell',
+                'delete',
+                'clear',
+                'merge_cells',
+                'cell_set_text',
+                'cell_set_bgcolor',
+                'cell_set_text_color',
+                'cell_set_text_size',
+                'cell_set_height',
+                'cell_set_width',
+                'cell_set_tooltip',
+                'cell_set_text_halign',
+                'cell_set_text_valign',
+                'cell_set_text_font_family',
+                'set_position',
+                'set_bgcolor',
+                'set_border_color',
+                'set_border_width',
+                'set_frame_color',
+                'set_frame_width',
+            ],
+            'table',
+        );
+        Object.defineProperty(this.pine['table'], 'all', {
+            get: () => tableHelper.all,
+        });
+
+        // Register all drawing helpers for streaming rollback and plot sync
+        this._drawingHelpers = [labelHelper, lineHelper, boxHelper, linefillHelper, polylineHelper, tableHelper];
+
+        // color namespace
+        const colorHelper = new PineColor(this);
+        this.bindContextObject(
+            colorHelper,
+            [
+                'any',
+                'param',
+                'new',
+                'rgb',
+                'from_gradient',
+                'r',
+                'g',
+                'b',
+                't',
+                'aqua',
+                'black',
+                'blue',
+                'fuchsia',
+                'gray',
+                'green',
+                'lime',
+                'maroon',
+                'navy',
+                'olive',
+                'orange',
+                'purple',
+                'red',
+                'silver',
+                'teal',
+                'white',
+                'yellow',
+            ],
+            'color',
+        );
+    }
+
+    /**
+     * Roll back all drawing objects created at or after the given bar index.
+     * Called during streaming updates to prevent accumulation when bars are re-processed.
+     */
+    rollbackDrawings(fromBarIdx: number): void {
+        for (const helper of this._drawingHelpers) {
+            helper.rollbackFromBar(fromBarIdx);
+        }
     }
 
     private bindContextObject(instance: any, entries: string[], root: string = '') {
@@ -286,6 +641,25 @@ export class Context {
             return trg;
         }
 
+        // First bar: evaluate thunk if source is a deferred factory call
+        if (typeof src === 'function') {
+            src = src();
+        }
+
+        // Resolve thunks inside PineTypeObject fields (UDT instances).
+        // When a `var` declaration initializes a UDT with factory calls like
+        // `MyType.new(line.new(...), label.new(...))`, the factory calls are
+        // wrapped in thunks to prevent orphan objects on bars 1+. Here on bar 0,
+        // we evaluate those thunks to get the actual drawing objects.
+        if (src instanceof PineTypeObject) {
+            const def = src.__def__;
+            for (const key in def) {
+                if (typeof src[key] === 'function') {
+                    src[key] = src[key]();
+                }
+            }
+        }
+
         // First bar: Initialize with source value
         let value;
         if (src instanceof Series) {
@@ -310,8 +684,10 @@ export class Context {
      * @param decimals - the number of decimals to precision to
      * @returns the precision number
      */
+    private static readonly PRECISION_EPSILON = 10 ** 10; // Cache default epsilon
+
     precision(value: number, decimals: number = 10) {
-        const epsilon = 10 ** decimals;
+        const epsilon = decimals === 10 ? Context.PRECISION_EPSILON : 10 ** decimals;
         return typeof value === 'number' ? Math.round(value * epsilon) / epsilon : value;
         //if (typeof n !== 'number' || isNaN(n)) return n;
         //return Number(n.toFixed(decimals));
@@ -344,7 +720,7 @@ export class Context {
             } else {
                 this.params[name][this.params[name].length - 1] = source;
             }
-            return new Series(this.params[name], 0);
+            return new Series(this.params[name], index || 0);
         }
     }
 
@@ -380,7 +756,7 @@ export class Context {
      */
     set(target: any, value: any) {
         if (target instanceof Series) {
-            target.set(0, value);
+            target.set(0, typeof value === 'number' ? this.precision(value) : value);
             return;
         }
 
@@ -394,16 +770,67 @@ export class Context {
         }
     }
 
+    /**
+     * Resolve an iterable for `for x in collection` codegen.
+     * Handles PineArrayObject (unwrap to inner JS array) and plain JS arrays uniformly.
+     * Returns the value itself if it's already iterable (Map, Set, etc.).
+     *
+     * Centralizing this here means the transpiler can emit a uniform shape regardless of
+     * whether the iterable is a built-in returning a plain array (e.g. box.all) or a UDT
+     * field holding a PineArrayObject — and future collection types only need to update
+     * this helper, not the codegen.
+     */
+    iter(source: any): any {
+        if (source == null) return [];
+        // PineArrayObject wraps the underlying JS array as `.array`
+        if (Array.isArray(source.array)) return source.array;
+        // PineMapObject wraps a JS Map as `.map` — iterating yields [key, value]
+        // pairs (Pine's `for v in map` semantics).
+        if (source.map instanceof Map) return source.map;
+        return source;
+    }
+
+    /**
+     * Resolve an iterable yielding [key, value] tuples for `for [k, v] in collection`
+     * destructuring codegen. PineArrayObject's [Symbol.iterator] yields scalar values, so
+     * we must explicitly call `.entries()` on the underlying array. PineMapObject stores
+     * its data on `.map` (a JS Map) — without this branch the fallthrough returned an
+     * empty iterator and `for [k,v] in map` silently iterated 0 times.
+     */
+    entries(source: any): IterableIterator<[any, any]> {
+        if (source == null) return [].entries();
+        if (Array.isArray(source.array)) return source.array.entries();
+        if (source.map instanceof Map) return source.map.entries();
+        if (Array.isArray(source)) return source.entries();
+        // Map / Set / other iterables that already yield tuples
+        if (typeof source.entries === 'function') return source.entries();
+        return [].entries();
+    }
+
     //#region [Call Stack Management] ===========================
 
     private _callStack: string[] = [];
+    /**
+     * Cumulative call-path stack. Each entry is the full path from the root to
+     * the current call, formed by joining the syntactic call-site ids with '|'.
+     *
+     * Pine semantics is per-call-PATH (not per-syntactic-call-site): a function
+     * with internal `var` state, called via two distinct paths through a wrapper,
+     * must keep state independent per path. Keying lctx by the path (rather than
+     * the immediate site id) makes `$$.var.*` slots and `$$.id + '_taN'` ta
+     * callsite ids correctly path-scoped without any transpiler changes.
+     */
+    private _pathStack: string[] = [];
 
     /**
      * Pushes a call ID onto the stack
      * @param id - The call ID
      */
     public pushId(id: string) {
+        const parent = this._pathStack.length > 0 ? this._pathStack[this._pathStack.length - 1] : '';
+        const path = parent ? parent + '|' + id : id;
         this._callStack.push(id);
+        this._pathStack.push(path);
     }
 
     /**
@@ -411,13 +838,15 @@ export class Context {
      */
     public popId() {
         this._callStack.pop();
+        this._pathStack.pop();
     }
 
     /**
-     * Returns the current call ID from the top of the stack
+     * Returns the current call PATH (cumulative ids joined by '|') from the top
+     * of the stack. Used as the lctx key for the current function call.
      */
     public peekId() {
-        return this._callStack.length > 0 ? this._callStack[this._callStack.length - 1] : '';
+        return this._pathStack.length > 0 ? this._pathStack[this._pathStack.length - 1] : '';
     }
 
     /**
@@ -533,12 +962,12 @@ export class Context {
                     'color: #FFA500; font-weight: bold;',
                     'color: #FFA500;',
                     oldUsage,
-                    newUsage
+                    newUsage,
                 );
             } else {
                 // Node.js environment - use ANSI color codes
                 console.warn(
-                    `\x1b[33m[WARNING] ${oldUsage} syntax is deprecated. Use ${newUsage} instead. This will be removed in a future version.\x1b[0m`
+                    `\x1b[33m[WARNING] ${oldUsage} syntax is deprecated. Use ${newUsage} instead. This will be removed in a future version.\x1b[0m`,
                 );
             }
         }

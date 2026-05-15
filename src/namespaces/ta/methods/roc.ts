@@ -15,8 +15,10 @@ export function roc(context: any) {
                 lastIdx: -1,
                 // Committed state
                 prevWindow: [],
+                prevCallCount: 0,
                 // Tentative state
                 currentWindow: [],
+                currentCallCount: 0,
             };
         }
 
@@ -26,6 +28,7 @@ export function roc(context: any) {
         if (context.idx > state.lastIdx) {
             if (state.lastIdx >= 0) {
                 state.prevWindow = [...state.currentWindow];
+                state.prevCallCount = state.currentCallCount;
             }
             state.lastIdx = context.idx;
         }
@@ -37,18 +40,26 @@ export function roc(context: any) {
 
         window.unshift(currentValue);
 
-        if (window.length <= length) {
-            // Update tentative state
-            state.currentWindow = window;
-            return NaN;
+        while (window.length > length + 1) {
+            window.pop();
         }
 
-        if (window.length > length + 1) {
-            window.pop();
+        // Track actual call count for callsite-correct backfill
+        const callCount = state.prevCallCount + 1;
+        if (window.length < length + 1 && (callCount >= length + 1 || context.idx >= length)) {
+            const series = Series.from(source);
+            while (window.length < length + 1) {
+                window.push(series.get(window.length));
+            }
         }
 
         // Update tentative state
         state.currentWindow = window;
+        state.currentCallCount = callCount;
+
+        if (window.length <= length) {
+            return NaN;
+        }
 
         const prevValue = window[length];
         const roc = ((currentValue - prevValue) / prevValue) * 100;

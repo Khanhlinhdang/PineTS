@@ -46,13 +46,13 @@ This section documents architectural decisions and code organization patterns in
 
 **Affected Namespaces:**
 
--   `ta` (Technical Analysis)
--   `math` (Mathematical operations)
--   `array` (Array operations)
--   `map` (Map/dictionary operations)
--   `matrix` (Matrix operations)
--   `input` (User input handling)
--   `request` (Multi-timeframe/symbol requests)
+- `ta` (Technical Analysis)
+- `math` (Mathematical operations)
+- `array` (Array operations)
+- `map` (Map/dictionary operations)
+- `matrix` (Matrix operations)
+- `input` (User input handling)
+- `request` (Multi-timeframe/symbol requests)
 
 **Generation Scripts:**
 
@@ -120,8 +120,8 @@ param(source, index, name) { /* ... */ }
 
 **Files:**
 
--   [`src/namespaces/ta/methods/param.ts`](ta/methods/param.ts)
--   [`src/namespaces/math/methods/param.ts`](math/methods/param.ts)
+- [`src/namespaces/ta/methods/param.ts`](ta/methods/param.ts)
+- [`src/namespaces/math/methods/param.ts`](math/methods/param.ts)
 
 #### Type B - Simple Unwrapping (input, array, map, matrix)
 
@@ -134,10 +134,10 @@ param(source, index) { return Series.from(source).get(index); }
 
 **Files:**
 
--   [`src/namespaces/array/methods/param.ts`](array/methods/param.ts)
--   [`src/namespaces/input/methods/param.ts`](input/methods/param.ts)
--   [`src/namespaces/map/methods/param.ts`](map/methods/param.ts)
--   [`src/namespaces/matrix/methods/param.ts`](matrix/methods/param.ts)
+- [`src/namespaces/array/methods/param.ts`](array/methods/param.ts)
+- [`src/namespaces/input/methods/param.ts`](input/methods/param.ts)
+- [`src/namespaces/map/methods/param.ts`](map/methods/param.ts)
+- [`src/namespaces/matrix/methods/param.ts`](matrix/methods/param.ts)
 
 #### Type C - Tuple Tracking (request)
 
@@ -152,9 +152,9 @@ param(source, index, name) { /* ... */ return [val, name]; }
 
 **Why Different?** Each namespace has unique requirements:
 
--   **ta/math:** Need to track scalar values as time-series for historical lookback
--   **input/array/map/matrix:** Only need current values, no history tracking
--   **request:** Must track expression names for caching multi-timeframe data
+- **ta/math:** Need to track scalar values as time-series for historical lookback
+- **input/array/map/matrix:** Only need current values, no history tracking
+- **request:** Must track expression names for caching multi-timeframe data
 
 ---
 
@@ -165,7 +165,7 @@ param(source, index, name) { /* ... */ return [val, name]; }
 **Transpiler Code:**
 
 ```typescript
-// In src/transpiler/transformers/ExpressionTransformer.ts:877
+// In src/transpiler/transformers/ExpressionTransformer.ts
 if (namespace === 'ta') {
     node.arguments.push(scopeManager.getNextTACallId());
 }
@@ -187,8 +187,8 @@ ta.sma(volume, 20, '_ta1');
 
 **Other Namespaces:** Don't need this because they're either:
 
--   **Stateless** (math operations)
--   **Instance-based** (array/map/matrix have their own object instances)
+- **Stateless** (math operations)
+- **Instance-based** (array/map/matrix have their own object instances)
 
 ---
 
@@ -209,8 +209,8 @@ plot(series, { title, color, ... })     // or object
 
 **Files:**
 
--   [`src/namespaces/utils.ts`](utils.ts) - Generic parser
--   Used by `plot`, `plotchar`, `indicator`, and other core functions
+- [`src/namespaces/utils.ts`](utils.ts) - Generic parser
+- Used by `plot`, `plotchar`, `indicator`, and other core functions
 
 #### Strategy B - Object-Only (Input namespace)
 
@@ -226,8 +226,8 @@ input.int({ defval: 10, title: 'Period', minval: 1 });
 
 **Why Different Strategies?**
 
--   **Core functions:** Need flexibility for backward compatibility and ease of use
--   **Input functions:** Benefit from explicit naming for clarity in user interface generation
+- **Core functions:** Need flexibility for backward compatibility and ease of use
+- **Input functions:** Benefit from explicit naming for clarity in user interface generation
 
 ---
 
@@ -243,8 +243,8 @@ This section documents Pine Script language features and quirks that PineTS must
 
 **Solution:** The transpiler converts all namespace property accesses into function calls. For instance:
 
--   `ta.tr` → `ta.tr()`
--   The `tr()` method then handles default arguments internally
+- `ta.tr` → `ta.tr()`
+- The `tr()` method then handles default arguments internally
 
 **Side Effect:** This affects namespaces that expose constants (like `math.pi`). These constants must be implemented as functions that return the constant value:
 
@@ -269,8 +269,8 @@ input.string(); // Specific string input
 
 **Solution:** The transpiler converts direct namespace calls to `namespace.any()` calls:
 
--   `input(...)` → `input.any(...)`
--   The `any()` method handles the generic case and delegates to appropriate sub-methods based on options
+- `input(...)` → `input.any(...)`
+- The `any()` method handles the generic case and delegates to appropriate sub-methods based on options
 
 ---
 
@@ -328,17 +328,17 @@ export function pi(context: any) {
 
 **Structure:**
 
--   **Outer array:** Represents the Series/time-series wrapper
--   **Inner array:** Contains the actual tuple values
+- **Outer array:** Represents the Series/time-series wrapper
+- **Inner array:** Contains the actual tuple values
 
 **Functions Using This Pattern:**
 Only a few TA functions return tuples:
 
--   `ta.macd()` → `[macdLine, signalLine, histogram]`
--   `ta.bb()` → `[upper, middle, lower]`
--   `ta.dmi()` → `[plusDI, minusDI, adx]`
--   `ta.kc()` → `[upper, basis, lower]`
--   `ta.supertrend()` → `[supertrend, direction, ...]`
+- `ta.macd()` → `[macdLine, signalLine, histogram]`
+- `ta.bb()` → `[upper, middle, lower]`
+- `ta.dmi()` → `[plusDI, minusDI, adx]`
+- `ta.kc()` → `[upper, basis, lower]`
+- `ta.supertrend()` → `[supertrend, direction, ...]`
 
 ---
 
@@ -350,8 +350,8 @@ Only a few TA functions return tuples:
 
 **Implementation:** The `math.__eq()` function uses:
 
--   **1e-8 tolerance** for floating-point comparisons
--   **Special NaN handling:** Treats `NaN == NaN` as `true` (unlike JavaScript's standard behavior)
+- **1e-8 tolerance** for floating-point comparisons
+- **Special NaN handling:** Treats `NaN == NaN` as `true` (unlike JavaScript's standard behavior)
 
 **Example:**
 
@@ -364,3 +364,75 @@ if (math.__eq(value, previousValue))
 ```
 
 **Reference:** [`src/namespaces/math/methods/__eq.ts`](math/methods/__eq.ts)
+
+---
+
+### Case #6: Dual-Use Identifiers (Variable + Function)
+
+**Problem:** Some Pine Script identifiers serve as both a variable and a callable function depending on usage context.
+
+**Examples:**
+
+```javascript
+na           // Variable: NaN value
+na(close)    // Function: checks if value is NaN
+
+time         // Variable: current bar's open time (series)
+time[1]      // Lookback: previous bar's open time
+time("D")    // Function: bar's time in daily timeframe
+```
+
+**Solution:** These identifiers are added to the `NAMESPACES_LIKE` list and implemented as namespace objects with a special `__value` property.
+
+The transpiler handles the dual-use via three transformations:
+
+1. **Bare identifier** → `identifier.__value` (returns the variable value)
+2. **Lookback access** → `$.get(identifier.__value, n)` (series indexing)
+3. **Function call** → `identifier.any(...)` (standard NAMESPACES_LIKE behavior from Case #2)
+
+**Implementation:**
+
+```typescript
+// NAHelper — __value is a constant (NaN)
+export class NAHelper {
+    get __value() { return NaN; }
+    param(source, index = 0) { return Series.from(source).get(index); }
+    any(series) { return isNaN(Series.from(series).get(0)); }
+}
+
+// TimeHelper — __value is a Series (dynamic per bar)
+export class TimeHelper {
+    get __value() { return this.context.data[this.dataField]; }
+    param(source, index = 0) { return Series.from(source).get(index); }
+    any(...args) { /* time(timeframe, session?, timezone?) */ }
+}
+```
+
+**Transpiler Changes:**
+
+The `__value` rewrite is generalized for all `NAMESPACES_LIKE` entries in several places:
+
+- `transformIdentifier` — bare identifier → `$.get(identifier.__value, 0)` (wraps in `$.get()` to extract scalar from Series)
+- `transformMemberExpression` — computed access `identifier[n]` → `$.get(identifier.__value, n)`
+- `transformFunctionArgument` — function arg → `identifier.__value` then param-wrapped (no `$.get()` — param wrapping handles Series)
+- `transformIdentifierForParam` — same as function arg: plain `identifier.__value` (no `$.get()`)
+- `transformVariableDeclaration` — `identifier.__value` assigned via `$.init()` (no `$.get()` — `$.init()` handles Series)
+- `getParamFromConditionalExpression` — ternary operands → `$.get(identifier.__value, 0)`
+- `transformAssignmentExpression` — RHS in assignments → `$.get(identifier.__value, 0)`
+
+Non-computed member access (e.g., `time.any(...)`, `hline.style_dashed`) is NOT rewritten, allowing normal namespace property access.
+
+**Files:**
+
+- [`src/namespaces/Core.ts`](Core.ts) — `NAHelper`, `TimeHelper` classes
+- [`src/transpiler/transformers/ExpressionTransformer.ts`](../transpiler/transformers/ExpressionTransformer.ts) — `__value` transformation logic (expression contexts)
+- [`src/transpiler/transformers/StatementTransformer.ts`](../transpiler/transformers/StatementTransformer.ts) — `__value` transformation logic (assignment contexts)
+- [`src/transpiler/settings.ts`](../transpiler/settings.ts) — `NAMESPACES_LIKE` list
+
+**Current Dual-Use Identifiers:**
+
+| Identifier   | `__value`            | `any()` behavior                |
+|-------------|----------------------|---------------------------------|
+| `na`        | `NaN`                | Checks if value is NaN          |
+| `time`      | `context.data.openTime` (Series) | Time filtered by timeframe/session |
+| `time_close`| `context.data.closeTime` (Series) | Close time filtered by timeframe/session |

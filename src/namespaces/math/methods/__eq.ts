@@ -9,11 +9,10 @@ export function __eq(context: any) {
         const valB = Series.from(b).get(0);
 
         if (typeof valA === 'number' && typeof valB === 'number') {
-            if (isNaN(valA) && isNaN(valB)) return true; // Treat NaNs as equal?
+            // Pine Script follows IEEE 754: NaN is never equal to anything, including itself
+            if (isNaN(valA) || isNaN(valB)) return false;
 
-            if (isNaN(valA) || isNaN(valB)) return false; // One is NaN, other is not -> False.
-
-            return Math.abs(valA - valB) < 1e-8;
+            return Math.abs(valA - valB) < 1e-9;
         }
 
         return valA === valB;

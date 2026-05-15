@@ -11,11 +11,48 @@ const UNDEFINED_ARG = {
     name: 'undefined',
 };
 
+/**
+ * Build the third argument to a `*.param(value, idx, name)` call. The
+ * statically-allocated `pN` string is unique across the script, but
+ * `Context.param` stores the resulting series in `context.params[name]` —
+ * a globally-keyed map — so two distinct call paths through the same
+ * function body would clobber each other (the function body bakes in
+ * the same `pN`, but each call writes a different value). Mirroring the
+ * existing ta-callsite-id convention (`$$.id + '_taN'`), we prefix the
+ * static `pN` with the current call-path id when inside a fn scope so
+ * each path writes to its own `params[path|pN]` slot. At top level
+ * `$$` doesn't exist, so we fall back to the literal `pN`.
+ */
+function makeParamNameArg(scopeManager: ScopeManager, paramId: string): any {
+    const literal = { type: 'Identifier', name: `'${paramId}'` };
+    // Use any-fn-scope-on-stack rather than `getCurrentScopeType() === 'fn'`
+    // — params can be emitted from inside if/for/while/switch nested inside
+    // a function body, where the immediate scope is e.g. 'if' but `$$` is
+    // still the function's local context.
+    if (!scopeManager.isInsideFunctionScope()) return literal;
+    const [localCtxName] = scopeManager.getVariable('$$');
+    if (!localCtxName) return literal;
+    return {
+        type: 'BinaryExpression',
+        operator: '+',
+        left: ASTFactory.createMemberExpression(
+            ASTFactory.createLocalContextIdentifier(),
+            ASTFactory.createIdentifier('id'),
+        ),
+        right: literal,
+    };
+}
+
 export function createScopedVariableReference(name: string, scopeManager: ScopeManager): any {
     const [scopedName, kind] = scopeManager.getVariable(name);
 
-    // Check if function scoped and not $$ itself
-    if (scopedName.match(/^fn\d+_/) && name !== '$$') {
+    // Check if function scoped (directly or in a nested scope within a function)
+    // and not $$ itself.  Variables in nested scopes (if, else, for) inside
+    // functions get names like `if4_nFibL` that don't start with `fn\d+_`,
+    // so we also ask the ScopeManager whether the variable lives inside a
+    // function scope.
+    const isInFnScope = scopedName.match(/^fn\d+_/) || scopeManager.isVariableInFunctionScope(name);
+    if (isInFnScope && name !== '$$') {
         const [localCtxName] = scopeManager.getVariable('$$');
         // Only if $$ is actually found (it should be in function scope)
         if (localCtxName) {
@@ -36,6 +73,19 @@ export function transformArrayIndex(node: any, scopeManager: ScopeManager): void
         if (scopeManager.isLoopVariable(node.property.name)) {
             // Transform the object if it's a context-bound variable
             if (node.object.type === 'Identifier' && !scopeManager.isLoopVariable(node.object.name)) {
+                // Local series vars (e.g., function parameters) should be wrapped with $.get()
+                // but stay as plain identifiers (not scoped to $.let.*)
+                if (scopeManager.isLocalSeriesVar(node.object.name)) {
+                    // Transform to $.get(paramName, index)
+                    const plainIdentifier = ASTFactory.createIdentifier(node.object.name);
+                    // Mark this identifier to skip further transformations
+                    plainIdentifier._skipTransformation = true;
+                    const getCall = ASTFactory.createGetCall(plainIdentifier, node.property);
+                    Object.assign(node, getCall);
+                    node._indexTransformed = true;
+                    return;
+                }
+
                 if (!scopeManager.isContextBound(node.object.name)) {
                     // Transform to $.get($.kind.scopedName, loopVar)
                     const contextVarRef = createScopedVariableReference(node.object.name, scopeManager);
@@ -49,16 +99,44 @@ export function transformArrayIndex(node: any, scopeManager: ScopeManager): void
 
         // Only transform if it's not a context-bound variable
         if (!scopeManager.isContextBound(node.property.name)) {
-            // Transform property to $.kind.scopedName
-            node.property = createScopedVariableReference(node.property.name, scopeManager);
+            // Local series var (e.g. function parameter) used as an index:
+            // keep as a bare identifier wrapped with $.get(param, 0). Mirrors
+            // the same handling at the loop-variable case above and the
+            // object-position case below. Without this branch, a function
+            // param used as a history-lookback index (e.g. `high[size]` where
+            // `size` is a fn param) is mis-scoped to `$.let.size_$0`, which
+            // is undefined → resolves to 0 → `high[size]` returns the current
+            // bar instead of the bar `size` ago, breaking pivot-detection
+            // idioms like `high[size] > ta.highest(size)`.
+            if (scopeManager.isLocalSeriesVar(node.property.name)) {
+                const plainIdentifier = ASTFactory.createIdentifier(node.property.name);
+                plainIdentifier._skipTransformation = true;
+                node.property = ASTFactory.createGetCall(plainIdentifier, 0);
+            } else {
+                // Transform property to $.kind.scopedName
+                node.property = createScopedVariableReference(node.property.name, scopeManager);
 
-            // Add [0] to the index: $.get($.kind.scopedName, 0)
-            node.property = ASTFactory.createGetCall(node.property, 0);
+                // Add [0] to the index: $.get($.kind.scopedName, 0)
+                node.property = ASTFactory.createGetCall(node.property, 0);
+            }
         }
     }
 
     if (node.computed && node.object.type === 'Identifier') {
         if (scopeManager.isLoopVariable(node.object.name)) {
+            return;
+        }
+
+        // Local series vars (e.g., function parameters) should be wrapped with $.get()
+        // but stay as plain identifiers (not scoped to $.let.*)
+        if (scopeManager.isLocalSeriesVar(node.object.name)) {
+            // Transform to $.get(paramName, index)
+            const plainIdentifier = ASTFactory.createIdentifier(node.object.name);
+            // Mark this identifier to skip further transformations
+            plainIdentifier._skipTransformation = true;
+            const getCall = ASTFactory.createGetCall(plainIdentifier, node.property);
+            Object.assign(node, getCall);
+            node._indexTransformed = true;
             return;
         }
 
@@ -75,6 +153,16 @@ export function transformArrayIndex(node: any, scopeManager: ScopeManager): void
             }
         }
     }
+
+    // Handle complex index expressions (BinaryExpression, UnaryExpression, etc.)
+    // when neither block above matched — e.g. func()[expr * 2], close[a + b] with non-Identifier object.
+    if (node.computed && node.property.type !== 'Identifier' && node.property.type !== 'MemberExpression'
+        && !node._indexTransformed) {
+        if (node.property.type === 'BinaryExpression' || node.property.type === 'UnaryExpression' ||
+            node.property.type === 'LogicalExpression' || node.property.type === 'ConditionalExpression') {
+            node.property = transformOperand(node.property, scopeManager);
+        }
+    }
 }
 
 export function addArrayAccess(node: any, scopeManager: ScopeManager): void {
@@ -88,13 +176,30 @@ export function addArrayAccess(node: any, scopeManager: ScopeManager): void {
 }
 
 export function transformIdentifier(node: any, scopeManager: ScopeManager): void {
+    // Skip if marked for no transformation (e.g., function parameters in $.get() calls)
+    if (node._skipTransformation) {
+        return;
+    }
+
     // Transform identifiers to use the context object
     if (node.name !== CONTEXT_NAME) {
-        // Special handling for 'na' - replace with NaN unless it's a function call
-        if (node.name === 'na') {
+        // For NAMESPACES_LIKE entries with __value (e.g. na, time, time_close),
+        // rewrite bare identifier access to identifier.__value
+        if (NAMESPACES_LIKE.includes(node.name) && scopeManager.isContextBound(node.name)) {
             const isFunctionCall = node.parent && node.parent.type === 'CallExpression' && node.parent.callee === node;
-            if (!isFunctionCall) {
-                node.name = 'NaN';
+            const isMemberAccess = node.parent && node.parent.type === 'MemberExpression' && node.parent.object === node && !node.parent.computed;
+            if (!isFunctionCall && !isMemberAccess) {
+                const originalName = node.name;
+                const valueExpr = {
+                    type: 'MemberExpression',
+                    object: { type: 'Identifier', name: originalName },
+                    property: { type: 'Identifier', name: '__value' },
+                    computed: false,
+                };
+                // Wrap in $.get() to extract current scalar value from Series
+                const getCall = ASTFactory.createGetCall(valueExpr, 0);
+                Object.assign(node, getCall);
+                delete node.name;
                 return;
             }
         }
@@ -329,6 +434,21 @@ export function transformMemberExpression(memberNode: any, originalParamName: st
         }
     }
 
+    // Function parameters (local series vars) with non-computed property access (e.g. w.val)
+    // need unwrapping: w.val → $.get(w, 0).val
+    // The parameter is a Series wrapping a UDT; without $.get(), .val accesses the Series, not the UDT.
+    if (
+        !memberNode.computed &&
+        memberNode.object &&
+        memberNode.object.type === 'Identifier' &&
+        scopeManager.isLocalSeriesVar(memberNode.object.name)
+    ) {
+        const plainId = ASTFactory.createIdentifier(memberNode.object.name);
+        plainId._skipTransformation = true;
+        memberNode.object = ASTFactory.createGetCall(plainId, 0);
+        return;
+    }
+
     //if statment variables always need to be transformed
     const isIfStatement = scopeManager.getCurrentScopeType() == 'if';
     const isElseStatement = scopeManager.getCurrentScopeType() == 'els';
@@ -372,6 +492,20 @@ export function transformMemberExpression(memberNode: any, originalParamName: st
             return;
         }
 
+        // For NAMESPACES_LIKE entries (e.g. time[1], na[0]), access __value before $.get()
+        if (
+            memberNode.object.type === 'Identifier' &&
+            NAMESPACES_LIKE.includes(memberNode.object.name) &&
+            scopeManager.isContextBound(memberNode.object.name)
+        ) {
+            memberNode.object = {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: memberNode.object.name },
+                property: { type: 'Identifier', name: '__value' },
+                computed: false,
+            };
+        }
+
         const getCall = ASTFactory.createGetCall(memberNode.object, memberNode.property);
 
         // Preserve location
@@ -384,14 +518,67 @@ export function transformMemberExpression(memberNode: any, originalParamName: st
         delete memberNode.object;
         delete memberNode.property;
         delete memberNode.computed;
+        return;
+    }
+
+    // Subscript on a UDT-field chain: `bar.low[N]` where `bar` is a user
+    // variable known to hold a UDT instance.
+    //
+    // Pine semantics: `bar.low[N]` reads bar's `.low` from N bars ago.
+    // Since `bar = BAR.new()` runs every bar, `$.let.glb1_bar` is a Series
+    // of PineTypeObject instances → `$.get(glb1_bar, N).low` is correct.
+    //
+    // The rewrite is gated by `scopeManager.isUdtInstance(leafBaseName)` so it
+    // does NOT fire for JS-style array indexing (e.g. `pl.points[0]` where
+    // `pl` is initialized via `polyline.new(...)` — a built-in, not in the
+    // UDT registry).
+    if (memberNode.computed && memberNode.object && memberNode.object.type === 'MemberExpression') {
+        // Walk down to find the leaf base of the chain.
+        let cursor: any = memberNode.object;
+        while (cursor.object && cursor.object.type === 'MemberExpression') {
+            cursor = cursor.object;
+        }
+        if (
+            cursor.object && cursor.object.type === 'Identifier' &&
+            scopeManager.isUdtInstance(cursor.object.name)
+        ) {
+            const baseName = cursor.object.name;
+            // For UDT-typed function parameters (Case 2), the leaf must stay a
+            // plain identifier — the parameter is bound directly to the Series
+            // of UDT instances passed in by the caller. For globally-scoped
+            // UDT instances, fall through to the standard scoped reference.
+            const baseRef = scopeManager.isLocalSeriesVar(baseName)
+                ? (() => {
+                      const id = ASTFactory.createIdentifier(baseName);
+                      id._skipTransformation = true;
+                      return id;
+                  })()
+                : createScopedVariableReference(baseName, scopeManager);
+            // Replace leaf `bar` with `$.get(<base-ref>, lookback)` and drop
+            // the outer `[N]` — the chain (`.low`) now reads from the previous
+            // bar's UDT instance.
+            cursor.object = ASTFactory.createGetCall(baseRef, memberNode.property);
+            // Re-anchor memberNode to the (now-rewritten) inner MemberExpression.
+            const inner = memberNode.object;
+            Object.assign(memberNode, inner);
+            delete memberNode.computed;
+            return;
+        }
     }
 }
 
 // Helper for transformFunctionArgument
 function transformIdentifierForParam(node: any, scopeManager: ScopeManager): any {
     if (node.type === 'Identifier') {
-        if (node.name === 'na') {
-            node.name = 'NaN';
+        if (NAMESPACES_LIKE.includes(node.name) && scopeManager.isContextBound(node.name)) {
+            const originalName = node.name;
+            Object.assign(node, {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: originalName },
+                property: { type: 'Identifier', name: '__value' },
+                computed: false,
+            });
+            delete node.name;
             return node;
         }
 
@@ -448,12 +635,52 @@ function transformOperand(node: any, scopeManager: ScopeManager, namespace: stri
             return getParamFromLogicalExpression(node, scopeManager, namespace);
         }
         case 'MemberExpression': {
+            // For non-computed property access on NAMESPACES_LIKE identifiers (e.g. label.style_label_down),
+            // leave as-is — these are namespace constant accesses, not series values.
+            const isNamespacePropAccess = !node.computed &&
+                node.object.type === 'Identifier' &&
+                NAMESPACES_LIKE.includes(node.object.name) &&
+                scopeManager.isContextBound(node.object.name);
+
+            // For computed access on NAMESPACES_LIKE identifiers (e.g. time[1], close[2]),
+            // produce $.get(identifier.__value, offset) instead of identifier.__value[offset].
+            const isNamespaceSubscript = node.computed &&
+                node.object.type === 'Identifier' &&
+                NAMESPACES_LIKE.includes(node.object.name) &&
+                scopeManager.isContextBound(node.object.name);
+
+            if (isNamespaceSubscript) {
+                const valueExpr = {
+                    type: 'MemberExpression',
+                    object: { type: 'Identifier', name: node.object.name },
+                    property: { type: 'Identifier', name: '__value' },
+                    computed: false,
+                };
+                return ASTFactory.createGetCall(valueExpr, node.property);
+            }
+
             // Handle array access
-            const transformedObject = node.object.type === 'Identifier' ? transformIdentifierForParam(node.object, scopeManager) : node.object;
+            const transformedObject = (node.object.type === 'Identifier' && !isNamespacePropAccess)
+                ? transformIdentifierForParam(node.object, scopeManager)
+                : node.object;
+
+            // For non-computed property access on user variables (e.g. get_spt.output),
+            // wrap the object in $.get() to extract the current bar's value.
+            // Without this, `$.let.glb1_get_spt.output` accesses the Series object itself,
+            // not the current bar value's property.
+            let finalObject = transformedObject;
+            if (!node.computed && node.object.type === 'Identifier' && !isNamespacePropAccess) {
+                const [scopedName] = scopeManager.getVariable(node.object.name);
+                const isUserVariable = scopedName !== node.object.name;
+                if (isUserVariable && !scopeManager.isLoopVariable(node.object.name)) {
+                    finalObject = ASTFactory.createGetCall(transformedObject, 0);
+                }
+            }
+
             // Don't add [0] if this is already an array access
             return {
                 type: 'MemberExpression',
-                object: transformedObject,
+                object: finalObject,
                 property: node.property,
                 computed: node.computed,
             };
@@ -571,8 +798,25 @@ function getParamFromConditionalExpression(node: any, scopeManager: ScopeManager
         {
             Identifier(node: any, state: any, c: any) {
                 if (node.name == 'NaN') return;
-                if (node.name == 'na') {
-                    node.name = 'NaN';
+                if (NAMESPACES_LIKE.includes(node.name) && scopeManager.isContextBound(node.name)) {
+                    // Skip wrapping when this identifier is the object of a non-computed
+                    // member access (e.g. label.style_label_down) — it's a namespace
+                    // constant access, not a series value.
+                    const isMemberAccess = state.parent && state.parent.type === 'MemberExpression' &&
+                        state.parent.object === node && !state.parent.computed;
+                    if (isMemberAccess) return;
+
+                    const originalName = node.name;
+                    const valueExpr = {
+                        type: 'MemberExpression',
+                        object: { type: 'Identifier', name: originalName },
+                        property: { type: 'Identifier', name: '__value' },
+                        computed: false,
+                    };
+                    // Wrap in $.get() to extract current scalar value from Series
+                    const getCall = ASTFactory.createGetCall(valueExpr, 0);
+                    Object.assign(node, getCall);
+                    delete node.name;
                     return;
                 }
                 node.parent = state.parent;
@@ -600,8 +844,9 @@ function getParamFromConditionalExpression(node: any, scopeManager: ScopeManager
                 }
             },
             MemberExpression(node: any, state: any, c: any) {
-                // Transform array indices first
-                transformArrayIndex(node, scopeManager);
+                // Transform member expression (handles array index renaming AND
+                // computed access conversion to $.get() for context variables)
+                transformMemberExpression(node, '', scopeManager);
                 // Then continue with object transformation
                 if (node.object) {
                     c(node.object, { parent: node, inNamespaceCall: state.inNamespaceCall });
@@ -656,7 +901,7 @@ function getParamFromConditionalExpression(node: any, scopeManager: ScopeManager
     const paramCall = {
         type: 'CallExpression',
         callee: memberExpr,
-        arguments: [node, UNDEFINED_ARG, { type: 'Identifier', name: `'${nextParamId}'` }],
+        arguments: [node, UNDEFINED_ARG, makeParamNameArg(scopeManager, nextParamId)],
         _transformed: true,
         _isParamCall: true,
     };
@@ -686,6 +931,18 @@ function getParamFromUnaryExpression(node: any, scopeManager: ScopeManager, name
         end: node.end,
     };
 
+    // Walk through the unary expression to transform any function calls
+    walk.recursive(unaryExpr, scopeManager, {
+        CallExpression(node: any, scopeManager: ScopeManager) {
+            if (!node._transformed) {
+                transformCallExpression(node, scopeManager);
+            }
+        },
+        MemberExpression(node: any) {
+            transformMemberExpression(node, '', scopeManager);
+        },
+    });
+
     return unaryExpr;
 }
 
@@ -705,7 +962,12 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
             arg = getParamFromUnaryExpression(arg, scopeManager, namespace);
             break;
         case 'ArrayExpression':
-            // Transform each element in the array
+            // Transform each element in the array. Non-Identifier elements
+            // (e.g. nested calls like `ta.sma(volume, maLenInput)` inside a
+            // `request.security_lower_tf(..., [open, close, ta.sma(...)])`
+            // tuple) must also be transformed so their nested identifiers
+            // get scoped — otherwise `maLenInput` leaks bare and throws
+            // "ReferenceError: maLenInput is not defined" at runtime.
             arg.elements = arg.elements.map((element: any) => {
                 if (element.type === 'Identifier') {
                     // Transform identifiers to use $.get(variable, 0)
@@ -713,8 +975,36 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
                         // It's a data variable like 'close', 'open' - use directly
                         return element;
                     }
+                    // Function parameters should use raw identifier wrapped in $.get()
+                    // (same pattern as non-array function param handling elsewhere)
+                    if (scopeManager.isLocalSeriesVar(element.name)) {
+                        const plainIdentifier = ASTFactory.createIdentifier(element.name);
+                        return ASTFactory.createGetCall(plainIdentifier, 0);
+                    }
                     // It's a user variable - transform to context reference
                     return createScopedVariableAccess(element.name, scopeManager);
+                }
+                // Recurse into non-Identifier elements using the same helpers
+                // the outer switch uses when these shapes appear at top level.
+                if (element.type === 'CallExpression') {
+                    transformCallExpression(element, scopeManager);
+                    return element;
+                }
+                if (element.type === 'BinaryExpression') {
+                    return getParamFromBinaryExpression(element, scopeManager, namespace);
+                }
+                if (element.type === 'LogicalExpression') {
+                    return getParamFromLogicalExpression(element, scopeManager, namespace);
+                }
+                if (element.type === 'ConditionalExpression') {
+                    return getParamFromConditionalExpression(element, scopeManager, namespace);
+                }
+                if (element.type === 'UnaryExpression') {
+                    return getParamFromUnaryExpression(element, scopeManager, namespace);
+                }
+                if (element.type === 'MemberExpression') {
+                    transformMemberExpression(element, namespace, scopeManager);
+                    return element;
                 }
                 return element;
             });
@@ -728,11 +1018,82 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
     const isPropertyAccess = arg.type === 'MemberExpression' && !arg.computed;
 
     if (isArrayAccess) {
+        // UDT field subscript: `bar.field[N]` (and chained `bar.outer.inner[N]`)
+        // where the leaf base is a registered UDT instance. Pine semantics:
+        // `bar = BAR.new()` runs every bar, so `$.let.glb1_bar` is a Series of
+        // PineTypeObject instances; `$.get(<scoped-bar>, N).field` returns the
+        // field value at N bars ago.
+        //
+        // The default `$.param(scalar, N, name)` wrapping is WRONG for this
+        // pattern when the call site is inside a conditional block — the
+        // accumulated history is per-call, not per-bar, so lookback skips
+        // over bars where the if-branch didn't fire and returns stale values
+        // from the *previous firing* instead of from N bars ago in time.
+        // Direct lookback on the bar series bypasses the param machinery
+        // entirely and works correctly regardless of call-site conditionality.
+        if (arg.object && arg.object.type === 'MemberExpression') {
+            let cursor: any = arg.object;
+            while (cursor.object && cursor.object.type === 'MemberExpression') {
+                cursor = cursor.object;
+            }
+            if (cursor.object?.type === 'Identifier' &&
+                scopeManager.isUdtInstance(cursor.object.name)) {
+                const baseName = cursor.object.name;
+                // Function-parameter UDT (Case 2): leaf must stay a plain
+                // identifier — the param is already bound to the Series of
+                // UDT instances passed in by the caller.
+                const baseRef = scopeManager.isLocalSeriesVar(baseName)
+                    ? (() => {
+                          const id = ASTFactory.createIdentifier(baseName);
+                          id._skipTransformation = true;
+                          return id;
+                      })()
+                    : createScopedVariableReference(baseName, scopeManager);
+                cursor.object = ASTFactory.createGetCall(baseRef, arg.property);
+                // `arg.object` is now the rewritten `$.get(<base>, N).field…`
+                // chain; it replaces the whole `arg` expression. The outer
+                // `$.param(...)` wrapper that the rest of this branch would
+                // have applied is intentionally skipped — the lookback is
+                // already baked into `$.get(...)`.
+                return arg.object;
+            }
+        }
+
         // Ensure complex objects are transformed before being used as array source
         if (arg.object.type === 'CallExpression') {
             transformCallExpression(arg.object, scopeManager);
         } else if (arg.object.type === 'MemberExpression') {
             transformMemberExpression(arg.object, '', scopeManager);
+            // Regression: `transformMemberExpression` early-returns for non-computed
+            // access on context-bound user variables (relying on a later top-level
+            // identifier walker to scope the base). But here the result is about to
+            // be wrapped in `$.param(...)` immediately, so the later walker never
+            // runs and the base identifier ends up bare in the emitted code.
+            // Pattern that hits this:  `bar.low[1]` where `bar` is a UDT instance.
+            // Walk into the MemberExpression chain and scope the leaf base when it
+            // is a user-declared variable (not a built-in / namespace / loop var /
+            // function param / local series).
+            let baseHolder: any = arg.object;
+            while (baseHolder && baseHolder.type === 'MemberExpression' && baseHolder.object) {
+                if (baseHolder.object.type === 'Identifier') {
+                    const base = baseHolder.object;
+                    const [scopedName] = scopeManager.getVariable(base.name);
+                    const isUserVariable = scopedName !== base.name;
+                    if (
+                        isUserVariable &&
+                        !scopeManager.isContextBound(base.name) &&
+                        !scopeManager.isRootParam(base.name) &&
+                        !scopeManager.isLoopVariable(base.name) &&
+                        !scopeManager.isLocalSeriesVar(base.name) &&
+                        !NAMESPACES_LIKE.includes(base.name) &&
+                        !KNOWN_NAMESPACES.includes(base.name)
+                    ) {
+                        baseHolder.object = createScopedVariableAccess(base.name, scopeManager);
+                    }
+                    break;
+                }
+                baseHolder = baseHolder.object;
+            }
         } else if (arg.object.type === 'BinaryExpression') {
             arg.object = getParamFromBinaryExpression(arg.object, scopeManager, namespace);
         } else if (arg.object.type === 'LogicalExpression') {
@@ -749,11 +1110,18 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
                 ? arg.object
                 : transformIdentifierForParam(arg.object, scopeManager);
 
-        // Transform the index if it's an identifier
-        const transformedProperty =
-            arg.property.type === 'Identifier' && !scopeManager.isContextBound(arg.property.name) && !scopeManager.isLoopVariable(arg.property.name)
-                ? transformIdentifierForParam(arg.property, scopeManager)
-                : arg.property;
+        // Transform the index expression and unwrap to scalar via $.get(..., 0)
+        let transformedProperty: any;
+        if (arg.property.type === 'Identifier' && !scopeManager.isContextBound(arg.property.name) && !scopeManager.isLoopVariable(arg.property.name)) {
+            transformedProperty = ASTFactory.createGetCall(transformIdentifierForParam(arg.property, scopeManager), 0);
+        } else if (arg.property.type === 'BinaryExpression' || arg.property.type === 'UnaryExpression' ||
+                   arg.property.type === 'LogicalExpression' || arg.property.type === 'ConditionalExpression') {
+            // Recursively transform identifiers inside complex index expressions
+            // e.g. close[strideInput * 2] → ta.param(close, $.get($.let.glb1_strideInput, 0) * 2, 'p2')
+            transformedProperty = transformOperand(arg.property, scopeManager, namespace);
+        } else {
+            transformedProperty = arg.property;
+        }
 
         const memberExpr = ASTFactory.createMemberExpression(ASTFactory.createIdentifier(namespace), ASTFactory.createIdentifier('param'));
 
@@ -761,7 +1129,7 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
         const paramCall = {
             type: 'CallExpression',
             callee: memberExpr,
-            arguments: [transformedObject, transformedProperty, { type: 'Identifier', name: `'${nextParamId}'` }],
+            arguments: [transformedObject, transformedProperty, makeParamNameArg(scopeManager, nextParamId)],
             _transformed: true,
             _isParamCall: true,
         };
@@ -778,6 +1146,47 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
     }
 
     if (isPropertyAccess) {
+        // Auto-call known namespace member accesses (e.g., ta.obv -> ta.obv())
+        // These are built-in variables (like ta.obv, ta.tr) that PineTS implements as
+        // functions. They must run on every bar (even inside conditional blocks) because
+        // they are cumulative/stateful. We hoist the call to the outermost scope.
+        if (
+            arg.object.type === 'Identifier' &&
+            KNOWN_NAMESPACES.includes(arg.object.name) &&
+            scopeManager.isContextBound(arg.object.name) &&
+            !arg.computed
+        ) {
+            const nsName = arg.object.name;
+
+            // Build the call expression: e.g. ta.obv()
+            const callExpr: any = {
+                type: 'CallExpression',
+                callee: {
+                    type: 'MemberExpression',
+                    object: { type: 'Identifier', name: nsName },
+                    property: { type: 'Identifier', name: arg.property.name },
+                    computed: false,
+                },
+                arguments: [],
+                _transformed: true,
+            };
+
+            // Inject TA call ID for state management (same as transformCallExpression does)
+            if (nsName === 'ta') {
+                callExpr.arguments.push(scopeManager.getNextTACallId());
+            }
+
+            // Hoist to outermost scope so it runs every bar
+            const tempVarName = scopeManager.generateTempVar();
+            scopeManager.addLocalSeriesVar(tempVarName);
+            const variableDecl = ASTFactory.createVariableDeclaration(tempVarName, callExpr);
+            scopeManager.addOuterHoistedStatement(variableDecl);
+
+            // Replace the argument with a reference to the hoisted variable
+            Object.assign(arg, ASTFactory.createIdentifier(tempVarName));
+            return arg;
+        }
+
         // Handle property access like trade.entry
         // Transform the object identifier if it's a user variable
         if (arg.object.type === 'Identifier') {
@@ -788,14 +1197,26 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
             // Only transform if the variable has been renamed (i.e., it's a user-defined variable)
             // Context-bound variables that are NOT renamed (like 'display', 'ta', 'input') should NOT be transformed
             if (isRenamed && !scopeManager.isLoopVariable(name)) {
-                // Transform object to $.get($.let.varName, 0)
-                const contextVarRef = ASTFactory.createContextVariableReference(kind, varName);
+                // Transform object to $.get($.let.varName, 0) or $$.get($$.let.varName, 0) for function scope
+                const contextVarRef = createScopedVariableReference(name, scopeManager);
                 const getCall = ASTFactory.createGetCall(contextVarRef, 0);
                 arg.object = getCall;
+            }
+            // Function parameters (local series vars) need $.get(w, 0).field unwrapping
+            else if (scopeManager.isLocalSeriesVar(name)) {
+                const plainId = ASTFactory.createIdentifier(name);
+                plainId._skipTransformation = true;
+                arg.object = ASTFactory.createGetCall(plainId, 0);
             }
         } else if (arg.object.type === 'MemberExpression') {
             // Recursively handle nested member expressions like obj.prop1.prop2
             transformFunctionArgument(arg.object, namespace, scopeManager);
+        } else if (arg.object.type === 'CallExpression') {
+            // Recursively handle call expression objects like arr.get(2).out
+            // The call might contain user variable identifiers that need transformation
+            if (!arg.object._transformed) {
+                transformCallExpression(arg.object, scopeManager);
+            }
         }
     }
 
@@ -803,8 +1224,12 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
         arg.properties = arg.properties.map((prop: any) => {
             // Get the variable name and kind
             if (prop.value.name) {
-                // If it's a context-bound variable (like 'close', 'open') and not a root param
-                if (scopeManager.isContextBound(prop.value.name) && !scopeManager.isRootParam(prop.value.name)) {
+                // If it's a context-bound variable (like 'close', 'open'), a local series
+                // var (non-root function parameter like 'col' in in_out()), or a loop
+                // variable — use the raw identifier, not a scoped reference.
+                if (scopeManager.isContextBound(prop.value.name) ||
+                    scopeManager.isLocalSeriesVar(prop.value.name) ||
+                    scopeManager.isLoopVariable(prop.value.name)) {
                     return {
                         type: 'Property',
                         key: {
@@ -841,18 +1266,26 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
     }
     // For non-array-access arguments
     if (arg.type === 'Identifier') {
-        if (arg.name === 'na') {
-            arg.name = 'NaN';
-            return arg;
+        // For NAMESPACES_LIKE entries, rewrite to .__value then fall through to param wrapping
+        if (NAMESPACES_LIKE.includes(arg.name) && scopeManager.isContextBound(arg.name)) {
+            const originalName = arg.name;
+            Object.assign(arg, {
+                type: 'MemberExpression',
+                object: { type: 'Identifier', name: originalName },
+                property: { type: 'Identifier', name: '__value' },
+                computed: false,
+            });
+            delete arg.name;
+            // Fall through to param wrapping below
         }
         // If it's a context-bound variable (like a nested function parameter), use it directly
-        if (scopeManager.isContextBound(arg.name) && !scopeManager.isRootParam(arg.name)) {
+        else if (scopeManager.isContextBound(arg.name) && !scopeManager.isRootParam(arg.name)) {
             const memberExpr = ASTFactory.createMemberExpression(ASTFactory.createIdentifier(namespace), ASTFactory.createIdentifier('param'));
             const nextParamId = scopeManager.generateParamId();
             const paramCall = {
                 type: 'CallExpression',
                 callee: memberExpr,
-                arguments: [arg, UNDEFINED_ARG, { type: 'Identifier', name: `'${nextParamId}'` }],
+                arguments: [arg, UNDEFINED_ARG, makeParamNameArg(scopeManager, nextParamId)],
                 _transformed: true,
                 _isParamCall: true,
             };
@@ -883,7 +1316,7 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
     const paramCall = {
         type: 'CallExpression',
         callee: memberExpr,
-        arguments: [transformedArg, UNDEFINED_ARG, { type: 'Identifier', name: `'${nextParamId}'` }],
+        arguments: [transformedArg, UNDEFINED_ARG, makeParamNameArg(scopeManager, nextParamId)],
         _transformed: true,
         _isParamCall: true,
     };
@@ -899,10 +1332,62 @@ export function transformFunctionArgument(arg: any, namespace: string, scopeMana
     return paramCall;
 }
 
+/** Check if a $.get() call exists anywhere in a MemberExpression/CallExpression chain */
+function hasGetCallInChain(node: any): boolean {
+    if (!node) return false;
+    if (isDirectGetCall(node)) return true;
+    if (node.type === 'MemberExpression') return hasGetCallInChain(node.object);
+    // Traverse through ChainExpression wrappers created by earlier optional chaining passes
+    if (node.type === 'ChainExpression') return hasGetCallInChain(node.expression);
+    // Traverse through intermediate CallExpression nodes (e.g. aEW.get(0).b5.method())
+    if (node.type === 'CallExpression') {
+        const callee = node.callee;
+        if (callee?.type === 'MemberExpression') return hasGetCallInChain(callee.object);
+        // Callee may already be wrapped in ChainExpression by a prior pass
+        if (callee?.type === 'ChainExpression') return hasGetCallInChain(callee.expression);
+    }
+    return false;
+}
+
+/** Check if a node is directly a $.get(...) call (not nested in a chain) */
+function isDirectGetCall(node: any): boolean {
+    return node?.type === 'CallExpression' &&
+        node.callee?.type === 'MemberExpression' &&
+        node.callee.object?.name === '$' &&
+        node.callee.property?.name === 'get';
+}
+
+/**
+ * Recursively resolves identifiers in a callee object chain.
+ * Handles patterns like: obj.get(i).out.method() where obj is a user variable
+ * that needs to be resolved to $.get($.var.xxx, 0).
+ */
+function resolveCalleeObject(node: any, parentNode: any, scopeManager: ScopeManager): void {
+    if (!node) return;
+    if (node.type === 'Identifier') {
+        node.parent = parentNode;
+        transformIdentifier(node, scopeManager);
+    } else if (node.type === 'MemberExpression') {
+        resolveCalleeObject(node.object, node, scopeManager);
+    } else if (node.type === 'CallExpression') {
+        if (node.callee && node.callee.type === 'MemberExpression') {
+            resolveCalleeObject(node.callee.object, node.callee, scopeManager);
+        }
+        if (!node._transformed) {
+            transformCallExpression(node, scopeManager);
+        }
+    }
+}
+
 export function transformCallExpression(node: any, scopeManager: ScopeManager, namespace?: string): void {
     // Skip if this node has already been transformed
     if (node._transformed) {
         return;
+    }
+
+    if (node.callee && node.callee.name === 'kernel_matrix') {
+        // console.log('Transforming kernel_matrix call');
+        // console.log('Arguments before:', node.arguments.map((a: any) => a.name));
     }
 
     // Check if this is a direct call to a known namespace (e.g. input(...))
@@ -943,6 +1428,39 @@ export function transformCallExpression(node: any, scopeManager: ScopeManager, n
             newArgs.push(transformFunctionArgument(arg, namespace, scopeManager));
         });
         node.arguments = newArgs;
+
+        // Inject unique callsite ID for plot/hline/fill to support duplicate titles
+        const PLOT_ID_NAMESPACES = ['plot', 'hline', 'fill'];
+        if (PLOT_ID_NAMESPACES.includes(namespace)) {
+            const callsiteId = scopeManager.getNextPlotCallId();
+            node.arguments.push({
+                type: 'ObjectExpression',
+                properties: [{
+                    type: 'Property',
+                    key: { type: 'Identifier', name: '__callsiteId' },
+                    value: callsiteId,
+                    kind: 'init',
+                    computed: false,
+                    shorthand: false,
+                }],
+            });
+        }
+
+        // Inject unique callsite ID for alert calls (per-callsite frequency gating)
+        if (namespace === 'alert') {
+            const callsiteId = scopeManager.getNextAlertCallId();
+            node.arguments.push({
+                type: 'ObjectExpression',
+                properties: [{
+                    type: 'Property',
+                    key: { type: 'Identifier', name: '__callsiteId' },
+                    value: callsiteId,
+                    kind: 'init',
+                    computed: false,
+                    shorthand: false,
+                }],
+            });
+        }
 
         // Inject unique call ID for TA functions to enable proper state management
         if (namespace === 'ta') {
@@ -1041,8 +1559,21 @@ export function transformCallExpression(node: any, scopeManager: ScopeManager, n
             // Create $.call access
             const contextCall = ASTFactory.createMemberExpression(ASTFactory.createContextIdentifier(), ASTFactory.createIdentifier('call'));
 
+            // Pine UFCS: a method `method foo(X this, ...)` can be called via
+            // `foo(receiver, args)` as well as `obj.foo(args)`. When the Pine
+            // name has NO regular function form (only the method), retarget
+            // the direct-call callee to the `$M_` JS identifier — otherwise
+            // `foo` is unbound at runtime ("foo is not defined"). When both
+            // forms exist, the regular function takes precedence.
+            const calleeName = node.callee.name;
+            let fnRef: any = node.callee;
+            if (scopeManager.isUserMethod(calleeName) && !scopeManager.isRegularUserFunction(calleeName)) {
+                fnRef = ASTFactory.createIdentifier(`$M_${calleeName}`);
+                fnRef._skipTransformation = true;
+            }
+
             // Construct new arguments list: [originalFn, callId, ...originalArgs]
-            const newArgs = [node.callee, callId, ...node.arguments];
+            const newArgs = [fnRef, callId, ...node.arguments];
 
             // Update node
             node.callee = contextCall;
@@ -1054,9 +1585,99 @@ export function transformCallExpression(node: any, scopeManager: ScopeManager, n
 
     // Handle method calls on local variables (e.g. arr.set())
     if (!isNamespaceCall && node.callee && node.callee.type === 'MemberExpression') {
+        const methodName = node.callee.property.name;
+        // Check if methodName is a user-defined function (and not a built-in property like push/pop/size unless shadowed?)
+        const isUserFunction = scopeManager.isUserFunction(methodName);
+
+        // Guard: if the object is a function parameter, this is a built-in method
+        // call on a typed argument (e.g. t.cell() where t is a table param),
+        // NOT a call to the user function with the same name. Skip transformation.
+        const _obj = node.callee.object;
+        const isBuiltinMethodOnParam = _obj.type === 'Identifier' && scopeManager.isLocalSeriesVar(_obj.name);
+
+        // Guard: if the callee object is a MemberExpression (property chain like
+        // aZZ.x.set(0, val)), this is a method call on a sub-property, NOT a user
+        // function call.  User function method calls only happen on direct variable
+        // references (e.g. obj.method(args) where obj is an Identifier).
+        const isChainedPropertyMethod = _obj.type === 'MemberExpression';
+
+        // Only allow obj.method(args) → method(obj, args) for functions declared
+        // with the Pine `method` keyword.  Regular functions (without `method`)
+        // must NOT be callable via dot-notation — obj.func() is always a built-in
+        // method call on the object, never a call to a user-defined function.
+        const isUserMethod = scopeManager.isUserMethod(methodName);
+
+        // Receiver-type guard: only retarget `obj.method()` when `obj` is a known
+        // UDT instance. Without this guard, names that collide with user methods
+        // would also retarget for built-in receivers — e.g. a `method delete(...)`
+        // declared on a UDT would hijack `someLine.delete()` calls. Narrowing on
+        // `isUdtInstance` keeps built-in calls intact.
+        // The receiver may have already been wrapped into a `$.get(...)` call by
+        // an earlier pass — but the original Identifier name is preserved on
+        // the wrapper as `.name`, so a single lookup covers both shapes.
+        const isReceiverUdtInstance = !!_obj.name && scopeManager.isUdtInstance(_obj.name);
+
+        if (isUserFunction && isUserMethod && !scopeManager.isContextBound(methodName) && !isBuiltinMethodOnParam && !isChainedPropertyMethod && isReceiverUdtInstance) {
+            // It's a user variable/function.
+            // Transform obj.method(args) -> method(obj, args)
+            // 1. Get the object (first arg)
+            const obj = node.callee.object;
+            // 2. Get the method name (function to call)
+            const method = node.callee.property;
+            
+            // 3. Transform arguments
+            const transformedArgs = node.arguments.map((arg: any) => {
+                if (arg._isParamCall) return arg;
+                return transformFunctionArgument(arg, CONTEXT_NAME, scopeManager);
+            });
+
+            // 4. Transform the object (it becomes the first argument)
+            // We need to ensure it's properly scoped/wrapped if it's a variable
+            // transformIdentifierForParam might be needed if it's an identifier
+            let transformedObj = obj;
+            if (obj.type === 'Identifier') {
+                 // Use transformIdentifier logic but we need it as an argument
+                 // transformFunctionArgument handles identifiers correctly
+                 transformedObj = transformFunctionArgument(obj, CONTEXT_NAME, scopeManager);
+            } else if (obj.type === 'CallExpression') {
+                 // If object is a call expression, transform it first
+                 transformCallExpression(obj, scopeManager);
+                 transformedObj = transformFunctionArgument(obj, CONTEXT_NAME, scopeManager);
+            }
+
+            // 5. Construct the new call: method(obj, ...args)
+            // We need to use $.call(method, id, obj, ...args) pattern because it's a user function
+            
+            // Create $.call access
+            const contextCall = ASTFactory.createMemberExpression(ASTFactory.createContextIdentifier(), ASTFactory.createIdentifier('call'));
+            const callId = scopeManager.getNextUserCallId();
+
+            // The method identifier needs to be transformed to its scoped name if necessary
+            // But here 'method' is just the property name node. We need an Identifier for the function.
+            // Methods are emitted with a `$M_` prefix on their JS name to avoid
+            // collision with regular functions of the same Pine name. Resolve
+            // the call against the prefixed JS identifier.
+            // Mark with _skipTransformation to prevent the identifier from being resolved
+            // to a same-named variable (e.g. `isSame2` function vs `isSame2` variable).
+            const functionRef = ASTFactory.createIdentifier(`$M_${methodName}`);
+            functionRef._skipTransformation = true;
+
+            const newArgs = [functionRef, callId, transformedObj, ...transformedArgs];
+
+            node.callee = contextCall;
+            node.arguments = newArgs;
+            node._transformed = true;
+            return;
+        }
+
         if (node.callee.object.type === 'Identifier') {
             transformIdentifier(node.callee.object, scopeManager);
+        } else {
+            // For complex callee chains (e.g. obj.get(i).out.method()),
+            // recursively resolve inner identifiers and calls
+            resolveCalleeObject(node.callee.object, node.callee, scopeManager);
         }
+
     }
 
     // Transform any nested call expressions in the arguments
@@ -1105,6 +1726,11 @@ export function transformCallExpression(node: any, scopeManager: ScopeManager, n
                     c(node.argument, newState);
                 },
                 CallExpression(node: any, state: any, c: any) {
+                    // Traverse callee chain to resolve inner identifiers (e.g. obj.get(i).out.avg())
+                    if (node.callee && node.callee.type === 'MemberExpression' && node.callee.object) {
+                        node.callee.object.parent = node.callee;
+                        c(node.callee.object, { parent: node.callee });
+                    }
                     if (!node._transformed) {
                         // First transform the call expression itself
                         transformCallExpression(node, scopeManager);
@@ -1120,4 +1746,61 @@ export function transformCallExpression(node: any, scopeManager: ScopeManager, n
             }
         );
     });
+
+    // ---------------------------------------------------------------------------
+    // Optional chaining for method calls on values retrieved via $.get().
+    //
+    // In Pine Script, calling methods on `na` (e.g. `na.delete()`, `na.set_x1()`)
+    // is a silent no-op. At runtime, `na` is represented as NaN. Since NaN is not
+    // null/undefined, single optional chaining (`NaN?.method()`) still crashes
+    // because `NaN.method` evaluates to `undefined`, then `undefined()` throws.
+    // Double optional chaining (`NaN?.method?.()`) is needed:
+    //   NaN?.method  → undefined  (NaN is not nullish, so .method is accessed → undefined)
+    //   undefined?.() → undefined (short-circuits, no crash)
+    //
+    // Two cases are handled:
+    //
+    // 1) Direct: $.get(X, N).method()  →  $.get(X, N)?.method?.()
+    //    Occurs when a `var` drawing variable is initialized to `na`:
+    //      var polyline profilePoly = na   →  $.initVar($.var.glb1_profilePoly, NaN)
+    //      profilePoly.delete()            →  $.get($.var.glb1_profilePoly, 0).delete()
+    //    $.get() returns NaN, and .delete() on NaN throws without optional chaining.
+    //
+    // 2) Chained: $.get(X, N).field.method()  →  $.get(X, N).field?.method?.()
+    //    Occurs when a UDT drawing field is `na`:
+    //      myUDT.boxField.delete()  →  $.get(udt, 0).boxField.delete()
+    //    The field resolves to NaN, same issue.
+    //
+    // NOTE: This must run AFTER argument transformation so that the callee is
+    // still a MemberExpression when argument type checks inspect it.
+    //
+    // CRITICAL — DO NOT broaden this condition to `hasGetCallInChain(node.callee)`.
+    // That matches intermediate calls (e.g. `$.get(arr,0).get(0)` in
+    // `arr.get(0).field.method()`) instead of the LEAF method call. Once an
+    // intermediate call is wrapped in ChainExpression, the leaf call can no
+    // longer find $.get() in its chain and misses optional chaining entirely.
+    // The two cases below are intentionally separated:
+    //   Case 1: callee.object IS the $.get() call directly  (direct pattern)
+    //   Case 2: callee.object is a MemberExpression with $.get() deeper in chain (chained pattern)
+    // ---------------------------------------------------------------------------
+    if (node.callee && node.callee.type === 'MemberExpression') {
+        const calleeObj = node.callee.object;
+        // Case 1 — Direct: $.get(X, N).method()
+        //   callee.object is the $.get() CallExpression itself
+        const isDirect = isDirectGetCall(calleeObj);
+        // Case 2 — Chained: $.get(X, N).field.method()
+        //   callee.object is a MemberExpression (the .field access), with $.get() deeper
+        const isChained = calleeObj?.type === 'MemberExpression' && hasGetCallInChain(calleeObj);
+
+        if (isDirect || isChained) {
+            // Double optional chaining: obj?.method?.()
+            // The node stays as a CallExpression (safe for AST walkers) but gets:
+            //   1. optional: true on the CallExpression  → produces ?.()
+            //   2. optional: true on the MemberExpression → produces ?.method
+            //   3. callee wrapped in ChainExpression      → groups the chain for astring
+            const innerCallee = Object.assign({}, node.callee, { optional: true });
+            node.callee = { type: 'ChainExpression', expression: innerCallee };
+            node.optional = true;
+        }
+    }
 }

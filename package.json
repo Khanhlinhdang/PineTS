@@ -1,6 +1,6 @@
 {
     "name": "pinets",
-    "version": "0.8.6",
+    "version": "0.9.15",
     "description": "Run Pine Script anywhere. PineTS is an open-source transpiler and runtime that brings Pine Script logic to Node.js and the browser with 1:1 syntax compatibility. Reliably write, port, and run indicators or strategies on your own infrastructure.",
     "keywords": [
         "Pine Script",
@@ -74,7 +74,7 @@
         "knip": "knip"
     },
     "author": "Alaa-eddine KADDOURI",
-    "license": "AGPL-3.0",
+    "license": "AGPL-3.0-only",
     "dependencies": {
         "acorn": "^8.14.0",
         "acorn-walk": "^8.3.4",
@@ -87,7 +87,7 @@
         "@types/react": "^19.2.10",
         "@types/react-dom": "^19.2.3",
         "@vitejs/plugin-react": "^5.1.2",
-        "@vitest/coverage-v8": "^2.0.0",
+        "@vitest/coverage-v8": "^4.1.0",
         "autoprefixer": "^10.4.23",
         "badgen": "^3.2.3",
         "cross-env": "^7.0.3",
@@ -98,12 +98,14 @@
         "rollup-plugin-typescript-paths": "^1.5.0",
         "tailwindcss": "^4.1.18",
         "tsx": "^4.21.0",
+        "typescript": "~5.9.3",
         "vite": "^7.3.1",
         "vite-tsconfig-paths": "^4.3.2",
-        "vitest": "^2.0.0"
+        "vitest": "^4.1.0"
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/alaa-eddine/PineTS.git"
-    }
+        "url": "git+https://github.com/QuantForgeOrg/PineTS.git"
+    },
+    "homepage": "https://quantforge.org/pinets/"
 }
