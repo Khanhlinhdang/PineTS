@@ -2,10 +2,11 @@
 // Copyright (C) 2025 Alaa-eddine KADDOURI
 
 /**
- * Returns the total net profit (realized P&L)
+ * Realized P&L summed across all closed trades.
+ * Matches Pine's strategy.netprofit.
  */
 export function netprofit(context: any) {
     return () => {
-        return context.strategy?.netProfit || 0;
+        return context.strategy?.netprofit ?? 0;
     };
 }

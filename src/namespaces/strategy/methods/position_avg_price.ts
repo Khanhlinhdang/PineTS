@@ -2,15 +2,13 @@
 // Copyright (C) 2025 Alaa-eddine KADDOURI
 
 /**
- * Returns the average entry price of the current position
- * Returns NaN if there is no open position
+ * Weighted-average entry price of the current open position.
+ * Returns NaN when flat — matches Pine's strategy.position_avg_price semantics.
  */
 export function position_avg_price(context: any) {
     return () => {
-        const position = context.strategy?.position;
-        if (!position || position.size === 0) {
-            return NaN;
-        }
-        return position.avgPrice || NaN;
+        const s = context.strategy;
+        if (!s || s.position_size === 0) return NaN;
+        return s.position_avg_price;
     };
 }

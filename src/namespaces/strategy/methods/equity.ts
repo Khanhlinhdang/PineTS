@@ -2,10 +2,11 @@
 // Copyright (C) 2025 Alaa-eddine KADDOURI
 
 /**
- * Returns the current equity (initial capital + net profit + unrealized P&L)
+ * Returns the current equity (initial_capital + netprofit + openprofit).
+ * Matches Pine's strategy.equity.
  */
 export function equity(context: any) {
     return () => {
-        return context.strategy?.equity || context.strategy?.config?.initial_capital || 10000;
+        return context.strategy?.equity ?? context.strategy?.config?.initial_capital ?? 10000;
     };
 }

@@ -2,11 +2,11 @@
 // Copyright (C) 2025 Alaa-eddine KADDOURI
 
 /**
- * Returns the current position size
- * Positive for long positions, negative for short positions, 0 for flat
+ * Signed position size — positive for long, negative for short, 0 for flat.
+ * Matches Pine's strategy.position_size.
  */
 export function position_size(context: any) {
     return () => {
-        return context.strategy?.position?.size || 0;
+        return context.strategy?.position_size ?? 0;
     };
 }

@@ -81,7 +81,7 @@ export function processStrategyOrders(context: any): void {
     if (!context.strategy) return;
 
     const strategy: StrategyState = context.strategy;
-    const { pendingOrders } = strategy;
+    const { pending_orders } = strategy;
 
     // Get current bar's OHLC data
     const openPrice = Series.from(context.data.open).get(0);
@@ -94,7 +94,7 @@ export function processStrategyOrders(context: any): void {
     updateUnrealizedPnL(context, openPrice);
 
     // Process each pending order that was placed on a previous bar
-    for (const order of pendingOrders) {
+    for (const order of pending_orders) {
         if (order.status !== 'pending') continue;
 
         // Orders placed on bar N can only fill on bar N+1 or later
@@ -106,10 +106,6 @@ export function processStrategyOrders(context: any): void {
         let shouldFill = false;
         let fillPrice = openPrice;
 
-        console.log(
-            `[DEBUG ProcessOrders] Checking order ${order.id} (type=${order.type}) at bar ${context.idx}. Open=${openPrice}, High=${highPrice}, Low=${lowPrice}`
-        );
-
         // Determine if order should be filled based on type
         switch (order.type) {
             case 'market':
@@ -120,32 +116,32 @@ export function processStrategyOrders(context: any): void {
 
             case 'limit':
                 // Limit orders fill when price reaches the limit level
-                if (order.limitPrice !== undefined) {
+                if (order.limit !== undefined) {
                     const direction = parseDirection(order.direction);
-                    if (direction === 1 && lowPrice <= order.limitPrice) {
+                    if (direction === 1 && lowPrice <= order.limit) {
                         // Long limit order - buy when price drops to limit
                         shouldFill = true;
-                        fillPrice = order.limitPrice;
-                    } else if (direction === -1 && highPrice >= order.limitPrice) {
+                        fillPrice = order.limit;
+                    } else if (direction === -1 && highPrice >= order.limit) {
                         // Short limit order - sell when price rises to limit
                         shouldFill = true;
-                        fillPrice = order.limitPrice;
+                        fillPrice = order.limit;
                     }
                 }
                 break;
 
             case 'stop':
                 // Stop orders fill when price crosses the stop level
-                if (order.stopPrice !== undefined) {
+                if (order.stop !== undefined) {
                     const direction = parseDirection(order.direction);
-                    if (direction === 1 && highPrice >= order.stopPrice) {
+                    if (direction === 1 && highPrice >= order.stop) {
                         // Long stop order - buy when price rises to stop
                         shouldFill = true;
-                        fillPrice = order.stopPrice;
-                    } else if (direction === -1 && lowPrice <= order.stopPrice) {
+                        fillPrice = order.stop;
+                    } else if (direction === -1 && lowPrice <= order.stop) {
                         // Short stop order - sell when price falls to stop
                         shouldFill = true;
-                        fillPrice = order.stopPrice;
+                        fillPrice = order.stop;
                     }
                 }
                 break;
@@ -155,14 +151,14 @@ export function processStrategyOrders(context: any): void {
             // Execute the order using the pre-calculated qty
             executeOrder(context, order, fillPrice, currentTime);
             order.status = 'filled';
-            order.fillPrice = fillPrice;
-            order.fillBar = context.idx;
-            order.fillTime = currentTime;
+            order.fill_price = fillPrice;
+            order.fill_bar = context.idx;
+            order.fill_time = currentTime;
         }
     }
 
     // Remove filled and cancelled orders
-    strategy.pendingOrders = pendingOrders.filter((o) => o.status === 'pending');
+    strategy.pending_orders = pending_orders.filter((o) => o.status === 'pending');
 
     // Update strategy metrics using CLOSE price (for script access)
     updateUnrealizedPnL(context, closePrice);
@@ -180,43 +176,44 @@ export function parseDirection(direction: number | string): number {
 }
 
 /**
- * Open a new trade
+ * Open a new trade.
+ *
+ * @param direction +1 long, -1 short
+ * @param qty       unsigned contract count
+ * @param price     fill price
+ * @param time      fill time (ms)
  */
 export function openTrade(context: any, entryId: string, direction: number, qty: number, price: number, time: number): void {
     const strategy: StrategyState = context.strategy;
+    const tradeNum = strategy.opentrades.length + strategy.closedtrades.length;
 
     const trade: Trade = {
-        id: `trade_${strategy.trades.length}`,
-        entryId,
-        direction,
-        qty,
-        entryPrice: price,
-        entryBar: context.idx,
-        entryTime: time,
+        id: `trade_${tradeNum}`,
+        entry_id: entryId,
+        entry_price: price,
+        entry_bar_index: context.idx,
+        entry_time: time,
+        size: direction * qty,   // SIGNED — matches Pine's closedtrades.size()
         status: 'open',
     };
 
-    strategy.trades.push(trade);
-    strategy.openTrades.push(trade);
+    strategy.opentrades.push(trade);
 
-    // Update position
-    const oldSize = strategy.position.size;
-    const newSize = oldSize + direction * qty;
+    // Update flat position scalars
+    const oldSize = strategy.position_size;
+    const newSize = oldSize + trade.size;
 
     if (oldSize === 0) {
         // Opening fresh position
-        strategy.position = {
-            size: newSize,
-            avgPrice: price,
-            direction,
-            entryBar: context.idx,
-        };
+        strategy.position_size = newSize;
+        strategy.position_avg_price = price;
+        strategy.position_entry_name = entryId;
     } else if (Math.sign(oldSize) === Math.sign(newSize)) {
-        // Adding to existing position - calculate new average price
-        const totalCost = Math.abs(oldSize) * strategy.position.avgPrice + qty * price;
+        // Adding to existing same-direction position — weighted-avg the entry price
+        const totalCost = Math.abs(oldSize) * strategy.position_avg_price + qty * price;
         const totalQty = Math.abs(newSize);
-        strategy.position.avgPrice = totalCost / totalQty;
-        strategy.position.size = newSize;
+        strategy.position_avg_price = totalCost / totalQty;
+        strategy.position_size = newSize;
     }
 }
 
@@ -227,9 +224,9 @@ export function openTrade(context: any, entryId: string, direction: number, qty:
 function executeOrder(context: any, order: Order, fillPrice: number, fillTime: number): void {
     const strategy: StrategyState = context.strategy;
     const direction = parseDirection(order.direction);
-    const oldPosition = strategy.position.size;
+    const oldPosition = strategy.position_size;
     const oldSign = Math.sign(oldPosition);
-    
+
     // Check if we are reducing/reversing the position
     // (Long position and selling, or Short position and buying)
     const isReducing = (oldSign === 1 && direction === -1) || (oldSign === -1 && direction === 1);
@@ -252,123 +249,131 @@ function executeOrder(context: any, order: Order, fillPrice: number, fillTime: n
 }
 
 /**
- * Close partial or full position
+ * Close partial or full position.
+ *
+ * FIFO accounting: closes oldest open trades first. Splits a trade if the
+ * close qty is smaller than the trade's remaining qty.
  */
 export function closePartialPosition(context: any, qtyToClose: number, exitPrice: number, exitTime: number): void {
     const strategy: StrategyState = context.strategy;
     let remainingQty = qtyToClose;
 
     // Close trades from oldest to newest (FIFO)
-    const tradesToClose = [...strategy.openTrades];
-    strategy.openTrades = [];
+    const tradesToClose = [...strategy.opentrades];
+    strategy.opentrades = [];
 
     for (const trade of tradesToClose) {
         if (remainingQty <= 0) {
             // Keep this trade open
-            strategy.openTrades.push(trade);
+            strategy.opentrades.push(trade);
             continue;
         }
 
-        const qtyClosing = Math.min(trade.qty, remainingQty);
+        const tradeQty = Math.abs(trade.size);
+        const qtyClosing = Math.min(tradeQty, remainingQty);
+        const tradeDirection = Math.sign(trade.size);
 
-        if (qtyClosing >= trade.qty) {
+        if (qtyClosing >= tradeQty) {
             // Fully close this trade
             trade.status = 'closed';
-            trade.exitPrice = exitPrice;
-            trade.exitBar = context.idx;
-            trade.exitTime = exitTime;
+            trade.exit_price = exitPrice;
+            trade.exit_bar_index = context.idx;
+            trade.exit_time = exitTime;
 
-            // Calculate profit
-            const priceChange = trade.direction === 1 ? exitPrice - trade.entryPrice : trade.entryPrice - exitPrice;
-            trade.profit = priceChange * trade.qty;
+            // Calculate profit (direction-aware)
+            const priceChange = tradeDirection === 1 ? exitPrice - trade.entry_price : trade.entry_price - exitPrice;
+            trade.profit = priceChange * tradeQty;
 
             // Update gross profit/loss
             if (trade.profit > 0) {
-                strategy.grossProfit += trade.profit;
+                strategy.grossprofit += trade.profit;
             } else {
-                strategy.grossLoss += Math.abs(trade.profit);
+                strategy.grossloss += Math.abs(trade.profit);
             }
 
-            strategy.closedTrades.push(trade);
+            strategy.closedtrades.push(trade);
             remainingQty -= qtyClosing;
         } else {
-            // Partially close this trade - split it
+            // Partially close this trade — split it into a closed portion + remaining open portion
+            const tradeNum = strategy.opentrades.length + strategy.closedtrades.length;
             const closedPortion: Trade = {
                 ...trade,
-                id: `trade_${strategy.trades.length}`,
-                qty: qtyClosing,
+                id: `trade_${tradeNum}`,
+                size: tradeDirection * qtyClosing,
                 status: 'closed',
-                exitPrice,
-                exitBar: context.idx,
-                exitTime,
+                exit_price: exitPrice,
+                exit_bar_index: context.idx,
+                exit_time: exitTime,
             };
 
-            // Calculate profit for closed portion
-            const priceChange = trade.direction === 1 ? exitPrice - trade.entryPrice : trade.entryPrice - exitPrice;
+            // Calculate profit for closed portion (direction-aware)
+            const priceChange = tradeDirection === 1 ? exitPrice - trade.entry_price : trade.entry_price - exitPrice;
             closedPortion.profit = priceChange * qtyClosing;
 
             // Update gross profit/loss
             if (closedPortion.profit > 0) {
-                strategy.grossProfit += closedPortion.profit;
+                strategy.grossprofit += closedPortion.profit;
             } else {
-                strategy.grossLoss += Math.abs(closedPortion.profit);
+                strategy.grossloss += Math.abs(closedPortion.profit);
             }
 
-            strategy.trades.push(closedPortion);
-            strategy.closedTrades.push(closedPortion);
+            strategy.closedtrades.push(closedPortion);
 
-            // Keep the remaining portion open
-            trade.qty -= qtyClosing;
-            strategy.openTrades.push(trade);
+            // Reduce the remaining portion (still open) by the closed qty, preserving direction sign
+            trade.size = tradeDirection * (tradeQty - qtyClosing);
+            strategy.opentrades.push(trade);
             remainingQty = 0;
         }
     }
 
     // Update net profit
-    strategy.netProfit = strategy.grossProfit - strategy.grossLoss;
+    strategy.netprofit = strategy.grossprofit - strategy.grossloss;
 
-    // Update position size
-    const currentSize = strategy.position.size;
+    // Update flat position scalars from the (possibly shrunken) open-trade book
+    const currentSize = strategy.position_size;
     const sizeReduction = Math.sign(currentSize) * qtyToClose; // Reduce magnitude
     const newSize = currentSize - sizeReduction;
 
-    strategy.position.size = newSize;
+    strategy.position_size = newSize;
 
     if (newSize === 0) {
-        strategy.position.avgPrice = 0;
-        strategy.position.direction = 0;
-    } else {
-        // Recalculate average price from remaining open trades
-        // This is crucial because closing older trades (FIFO) changes the weighted average price
-        // of the remaining position if the position was built from multiple entries at different prices.
-        if (strategy.openTrades.length > 0) {
-            let totalCost = 0;
-            let totalQty = 0;
-            for (const trade of strategy.openTrades) {
-                totalCost += trade.qty * trade.entryPrice;
-                totalQty += trade.qty;
-            }
-            strategy.position.avgPrice = totalCost / totalQty;
+        strategy.position_avg_price = NaN;
+        strategy.position_entry_name = '';
+    } else if (strategy.opentrades.length > 0) {
+        // Recompute average entry price from remaining open trades.
+        // Crucial because closing older trades (FIFO) changes the weighted
+        // average if the position was built from multiple entries at
+        // different prices.
+        let totalCost = 0;
+        let totalQty = 0;
+        for (const t of strategy.opentrades) {
+            const tQty = Math.abs(t.size);
+            totalCost += tQty * t.entry_price;
+            totalQty += tQty;
         }
+        strategy.position_avg_price = totalCost / totalQty;
+        // position_entry_name keeps pointing at whichever entry opened the
+        // first still-open trade
+        strategy.position_entry_name = strategy.opentrades[0].entry_id;
     }
 }
 
 /**
- * Update unrealized P&L for open trades
+ * Update unrealized P&L for open trades + the openprofit/equity scalars.
  */
 function updateUnrealizedPnL(context: any, currentPrice: number): void {
     const strategy: StrategyState = context.strategy;
 
     let unrealizedPnL = 0;
-    for (const trade of strategy.openTrades) {
-        const priceChange = trade.direction === 1 ? currentPrice - trade.entryPrice : trade.entryPrice - currentPrice;
-        unrealizedPnL += priceChange * trade.qty;
+    for (const trade of strategy.opentrades) {
+        const tradeQty = Math.abs(trade.size);
+        const tradeDirection = Math.sign(trade.size);
+        const priceChange = tradeDirection === 1 ? currentPrice - trade.entry_price : trade.entry_price - currentPrice;
+        unrealizedPnL += priceChange * tradeQty;
     }
 
-    console.log(`[DEBUG PnL] price=${currentPrice}, unrealized=${unrealizedPnL}, net=${strategy.netProfit}, initial=${strategy.initialCapital}`);
-
-    // Update equity with unrealized P&L
-    strategy.equity = strategy.initialCapital + strategy.netProfit + unrealizedPnL;
+    strategy.openprofit = unrealizedPnL;
+    strategy.equity = strategy.initial_capital + strategy.netprofit + unrealizedPnL;
 }
 
 /**
@@ -377,11 +382,12 @@ function updateUnrealizedPnL(context: any, currentPrice: number): void {
 function updateStrategyMetrics(context: any): void {
     const strategy: StrategyState = context.strategy;
 
-    // Net profit is already calculated when trades close
-    // Equity is updated with unrealized P&L
-
-    // Additional metrics can be calculated here
-    // (win rate, max drawdown, etc.)
+    // Net profit is already calculated when trades close.
+    // Equity is updated with unrealized P&L.
+    // Equity-curve peaks (max_drawdown / max_runup) and aggregate
+    // win/loss stats are deferred to a later pass when those scalar
+    // getters are implemented.
+    void strategy;
 }
 
 /**
@@ -424,20 +430,30 @@ export function initializeStrategy(context: any, config: any): void {
 
     context.strategy = {
         config: finalConfig,
-        trades: [],
-        openTrades: [],
-        closedTrades: [],
-        position: {
-            size: 0,
-            avgPrice: 0,
-            direction: 0,
-            entryBar: 0,
-        },
+
+        // Trade collections
+        opentrades: [],
+        closedtrades: [],
+        pending_orders: [],
+
+        // Flat position scalars
+        position_size: 0,
+        position_avg_price: NaN,        // Pine returns NaN when flat
+        position_entry_name: '',
+
+        // Account info
+        initial_capital: initialCapital,
+        account_currency: finalConfig.currency || 'USD',
         equity: initialCapital,
-        netProfit: 0,
-        grossProfit: 0,
-        grossLoss: 0,
-        pendingOrders: [],
-        initialCapital,
+        netprofit: 0,
+        grossprofit: 0,
+        grossloss: 0,
+        openprofit: 0,
+
+        // Peaks
+        max_drawdown: 0,
+        max_runup: 0,
+        equity_peak: initialCapital,
+        equity_trough: initialCapital,
     };
 }

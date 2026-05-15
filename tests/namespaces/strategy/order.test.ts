@@ -81,6 +81,8 @@ switch scenario
 //if not barstate.islast and time >= startDate and time <= endDate
 //    log.info('{0} {1} {2} {3} {4} {5}', strategy.opentrades, strategy.closedtrades, strategy.netprofit, strategy.position_size, strategy.position_avg_price, strategy.position_size)
 
+// Note: strategy.position_entry does not exist in Pine. The original test
+// used it as an unintentional duplicate of position_size. Dropped here.
 _opentrades = strategy.opentrades
 plotchar(_opentrades, "_opentrades")
 _closedtrades = strategy.closedtrades
@@ -90,9 +92,7 @@ plotchar(_netprofit, "_netprofit")
 _position_size = strategy.position_size
 plotchar(_position_size, "_position_size")
 _position_avg_price = strategy.position_avg_price
-plotchar(_position_avg_price, "_position_avg_price")
-_position_entry = strategy.position_entry
-plotchar(_position_entry, "_position_entry")`;
+plotchar(_position_avg_price, "_position_avg_price")`;
 
         const { result, plots } = await pineTS.run(sourceCode);
 
@@ -101,7 +101,6 @@ plotchar(_position_entry, "_position_entry")`;
         let _netprofit = plots['_netprofit']?.data;
         let _position_size = plots['_position_size']?.data;
         let _position_avg_price = plots['_position_avg_price']?.data;
-        let _position_entry = plots['_position_entry']?.data;
 
         const startDate = new Date('2019-07-15').getTime();
         const endDate = new Date('2019-11-20').getTime();
@@ -120,30 +119,29 @@ plotchar(_position_entry, "_position_entry")`;
             const netprofit = Math.round(_netprofit[i].value * 1000) / 1000;
             const position_size = Math.round(_position_size[i].value * 1000) / 1000;
             const position_avg_price = Math.round(_position_avg_price[i].value * 1000) / 1000;
-            const position_entry = Math.round(_position_entry[i].value * 1000) / 1000;
 
-            plotdata_str += `[${str_time}]: ${opentrades} ${closedTrades} ${netprofit} ${position_size} ${position_avg_price} ${position_entry}\n`;
+            plotdata_str += `[${str_time}]: ${opentrades} ${closedTrades} ${netprofit} ${position_size} ${position_avg_price}\n`;
         }
 
-        const expected_plot = `[2019-07-15T00:00:00.000-00:00]: 0 0 0 0 NaN 0
-[2019-07-22T00:00:00.000-00:00]: 0 0 0 0 NaN 0
-[2019-07-29T00:00:00.000-00:00]: 1 0 0 -10.488 9527.01 -10.488
-[2019-08-05T00:00:00.000-00:00]: 1 1 -12998.245 -1.514 9527.01 -1.514
-[2019-08-12T00:00:00.000-00:00]: 1 1 -12998.245 -1.514 9527.01 -1.514
-[2019-08-19T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-08-26T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-09-02T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-09-09T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-09-16T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-09-23T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-09-30T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-10-07T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-10-14T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-10-21T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469 -11.069
-[2019-10-28T00:00:00.000-00:00]: 1 3 -6344.572 -0.672 10314.1 -0.672
-[2019-11-04T00:00:00.000-00:00]: 1 3 -6344.572 -0.672 10314.1 -0.672
-[2019-11-11T00:00:00.000-00:00]: 2 3 -6344.572 -11.68 9112.776 -11.68
-[2019-11-18T00:00:00.000-00:00]: 2 3 -6344.572 -11.68 9112.776 -11.68`;
+        const expected_plot = `[2019-07-15T00:00:00.000-00:00]: 0 0 0 0 NaN
+[2019-07-22T00:00:00.000-00:00]: 0 0 0 0 NaN
+[2019-07-29T00:00:00.000-00:00]: 1 0 0 -10.488 9527.01
+[2019-08-05T00:00:00.000-00:00]: 1 1 -12998.245 -1.514 9527.01
+[2019-08-12T00:00:00.000-00:00]: 1 1 -12998.245 -1.514 9527.01
+[2019-08-19T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-08-26T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-09-02T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-09-09T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-09-16T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-09-23T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-09-30T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-10-07T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-10-14T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-10-21T00:00:00.000-00:00]: 2 1 -12998.245 -11.069 10206.469
+[2019-10-28T00:00:00.000-00:00]: 1 3 -6344.572 -0.672 10314.1
+[2019-11-04T00:00:00.000-00:00]: 1 3 -6344.572 -0.672 10314.1
+[2019-11-11T00:00:00.000-00:00]: 2 3 -6344.572 -11.68 9112.776
+[2019-11-18T00:00:00.000-00:00]: 2 3 -6344.572 -11.68 9112.776`;
 
         console.log('expected_plot', expected_plot);
         console.log('plotdata_str', plotdata_str);

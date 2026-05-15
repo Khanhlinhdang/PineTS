@@ -2,7 +2,7 @@
 // This file is manually created. Can be auto-generated in the future.
 // TODO: Create npm run generate:strategy-index script
 
-export type { StrategyConfig, StrategyState, Trade, Order, Position } from './types';
+export type { StrategyConfig, StrategyState, Trade, Order } from './types';
 
 import { any } from './methods/any';
 import { order } from './methods/order';
@@ -12,7 +12,6 @@ import { closedtrades } from './methods/closedtrades';
 import { netprofit } from './methods/netprofit';
 import { position_size } from './methods/position_size';
 import { position_avg_price } from './methods/position_avg_price';
-import { position_entry } from './methods/position_entry';
 import { equity } from './methods/equity';
 import { long } from './methods/long';
 import { short } from './methods/short';
@@ -29,7 +28,6 @@ const methods = {
     netprofit,
     position_size,
     position_avg_price,
-    position_entry,
     equity,
     long,
     short,
@@ -47,7 +45,6 @@ export class Strategy {
     netprofit: ReturnType<typeof methods.netprofit>;
     position_size: ReturnType<typeof methods.position_size>;
     position_avg_price: ReturnType<typeof methods.position_avg_price>;
-    position_entry: ReturnType<typeof methods.position_entry>;
     equity: ReturnType<typeof methods.equity>;
     long: ReturnType<typeof methods.long>;
     short: ReturnType<typeof methods.short>;
