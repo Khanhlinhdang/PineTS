@@ -67,6 +67,23 @@ export class LinefillHelper {
         return val;
     }
 
+    /**
+     * Resolve a color value, PRESERVING na markers so renderers can
+     * detect "no color" instead of being forced to paint a default.
+     * Pine emits na either as null (from `color(na)` — `color.any`
+     * returns null) or as NaN (from raw `na` literals). The previous
+     * implementation collapsed both to '' via `_resolve(color) || ''`,
+     * which destroyed the signal and made `linefill.new(line1, line2,
+     * color(na))` render as a default-coloured fill instead of being
+     * invisible. Mirror Box/Polyline `_resolveColor`.
+     */
+    private _resolveColor(val: any): any {
+        const resolved = this._resolve(val);
+        if (resolved === null || resolved === undefined) return resolved;
+        if (typeof resolved === 'number' && isNaN(resolved)) return NaN;
+        return resolved;
+    }
+
     // linefill.new(line1, line2, color) → series linefill
     // The transpiler may bundle named args into an object:
     //   linefill.new(line1, line2, {color: '#2196F3'})
@@ -85,7 +102,7 @@ export class LinefillHelper {
         // Extract color from named-args object if the transpiler bundled it
         const rawColor = color && typeof color === 'object' && !Array.isArray(color) && 'color' in color
             ? color.color : color;
-        const resolvedColor = this._resolve(rawColor) || '';
+        const resolvedColor = this._resolveColor(rawColor);
 
         // Deduplicate: replace existing linefill between the same line pair
         if (resolvedLine1 && resolvedLine2) {
@@ -130,7 +147,7 @@ export class LinefillHelper {
     @silentInSecondary
     set_color(id: LinefillObject, color: any): void {
         if (id && !id._deleted) {
-            id.color = this._resolve(color) || '';
+            id.color = this._resolveColor(color);
         }
     }
 
