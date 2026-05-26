@@ -445,10 +445,6 @@ export class PineTS {
     }
 
     /**
-     * Run the script completely and return the final context (backward compatible behavior)
-     * @private
-     */
-    /**
      * Run an already-transpiled PineTS function in this instance — no
      * additional transpile/parse pass. Used by `request.security_lower_tf`'s
      * slow path to execute the slice produced at primary-transpile time
@@ -473,6 +469,16 @@ export class PineTS {
         return context;
     }
 
+    /**
+     * Run the script completely and return the final context.
+     *
+     * Execution is split: all bars except the last are processed first, then a
+     * var-state snapshot is taken, then the last bar is processed. This gives
+     * updateTail() a reliable snapshot-based restore point, matching the
+     * pattern used by _runPaginated and eliminates the pop-based drift that
+     * occurred when var variables were modified in-place during re-execution.
+     * @private
+     */
     private async _runComplete(pineTSCode: Function | String, inputs: Record<string, any>, periods?: number): Promise<Context> {
         await this.ready();
         if (!periods) periods = this.data.length;
@@ -486,7 +492,21 @@ export class PineTS {
         const slices = (this._transpiledCode as any)._ltfSlices;
         if (slices) (context as any)._ltfTruncatedBodies = slices;
 
-        await this._executeIterations(context, this._transpiledCode, this.data.length - periods, this.data.length);
+        // Split execution: process all bars except the last, snapshot, then
+        // process the last bar. This gives updateTail() a reliable restore
+        // point, matching the pattern used by _runPaginated.
+        const startIdx = this.data.length - periods;
+        const endIdx = this.data.length;
+
+        if (endIdx - startIdx > 1) {
+            await this._executeIterations(context, this._transpiledCode, startIdx, endIdx - 1);
+            (context as any)._varSnapshot = this._snapshotVarState(context);
+            await this._executeIterations(context, this._transpiledCode, endIdx - 1, endIdx);
+        } else {
+            // Single bar: no meaningful pre-last range to snapshot; execute directly.
+            // updateTail() will fall back to _removeLastResult on this context.
+            await this._executeIterations(context, this._transpiledCode, startIdx, endIdx);
+        }
 
         return context;
     }
@@ -797,9 +817,16 @@ export class PineTS {
 
     /**
      * Update the secondary context's tail with fresh market data.
-     * Mirrors the streaming update logic in _runPaginated:
-     * fetches new/updated candles, rolls back the last result, and re-executes
-     * only the affected bars.
+     *
+     * Uses snapshot-restore for reliable var state rollback, matching the
+     * approach used by _runPaginated. The pop-based _removeLastResult is
+     * only used as a fallback for contexts that have no snapshot (e.g. those
+     * produced by runPretranspiled, which skips the split-execute pattern).
+     *
+     * After restoring state and re-executing, a fresh snapshot is taken before
+     * the last bar so that subsequent updateTail() calls also have a valid
+     * restore point.
+     *
      * @param context - The cached secondary context to update
      * @returns true if data was updated, false if no changes
      */
@@ -810,11 +837,66 @@ export class PineTS {
         const { newCandles, updatedLastCandle } = await this._updateMarketData();
         if (newCandles === 0 && !updatedLastCandle) return false;
 
-        this._removeLastResult(context);
+        // Use snapshot-restore for reliable var state rollback.
+        // _removeLastResult's pop-based approach drifts when re-executing
+        // modifies var values in-place (see _runPaginated comment, line 591).
+        const snapshot = (context as any)._varSnapshot;
+        if (snapshot) {
+            this._restoreVarState(context, snapshot);
+        } else {
+            // No snapshot available (context from runPretranspiled or single-bar
+            // _runComplete) — fall back to pop-based rollback.
+            this._removeLastResult(context);
+        }
+
+        // Pop result + market-data series.
+        // _restoreVarState handles var/let/const/params Series but does NOT
+        // cover result arrays or the market data series on context.data —
+        // those must be popped explicitly here.
+        if (Array.isArray(context.result)) {
+            context.result.pop();
+        } else if (typeof context.result === 'object' && context.result !== null) {
+            for (let key in context.result) {
+                if (Array.isArray(context.result[key])) {
+                    context.result[key].pop();
+                }
+            }
+        }
+
+        context.data.close.data.pop();
+        context.data.open.data.pop();
+        context.data.high.data.pop();
+        context.data.low.data.pop();
+        context.data.volume.data.pop();
+        context.data.hl2.data.pop();
+        context.data.hlc3.data.pop();
+        context.data.ohlc4.data.pop();
+        context.data.hlcc4.data.pop();
+        context.data.openTime.data.pop();
+        if (context.data.closeTime) context.data.closeTime.data.pop();
+        context.data.bar_index.data.pop();
+
+        context.dataVersion = (context.dataVersion || 0) + 1;
         context.length = this.data.length;
+
         const processFrom = this.data.length - (newCandles + 1);
         context.rollbackDrawings(processFrom);
-        await this._executeIterations(context, this._transpiledCode as Function, processFrom, this.data.length);
+
+        // Split execution: process bars before last → snapshot → last bar.
+        // Ensures the next updateTail() call has a fresh, valid restore point.
+        const endIdx = this.data.length;
+
+        if (processFrom < endIdx - 1) {
+            // Multiple bars to re-execute: snapshot before the last one.
+            await this._executeIterations(context, this._transpiledCode as Function, processFrom, endIdx - 1);
+            (context as any)._varSnapshot = this._snapshotVarState(context);
+            await this._executeIterations(context, this._transpiledCode as Function, endIdx - 1, endIdx);
+        } else {
+            // Only 1 bar to re-execute (same-bar tick update).
+            // The existing snapshot remains valid as "before this bar" — no refresh needed.
+            await this._executeIterations(context, this._transpiledCode as Function, processFrom, endIdx);
+        }
+
         return true;
     }
 
