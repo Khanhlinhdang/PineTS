@@ -14,6 +14,7 @@ import PineMath from './namespaces/math/math.index';
 import { PineRequest } from './namespaces/request/request.index';
 import TechnicalAnalysis from './namespaces/ta/ta.index';
 import { PineTypeObject } from './namespaces/PineTypeObject';
+import { Strategy, StrategyState } from './namespaces/strategy/strategy.index';
 import { Series } from './Series';
 import { Log } from './namespaces/Log';
 import { Str } from './namespaces/Str';
@@ -46,6 +47,7 @@ export class Context {
     public indicator: IndicatorOptions;
     public cache: any = {};
     public taState: any = {}; // State for incremental TA calculations
+    public strategy?: StrategyState; // State for strategy calculations
     public isSecondaryContext: boolean = false; // Flag to prevent infinite recursion in request.security
     public chartTimezone: string | null = null; // Chart display timezone (affects log timestamps only, not computation)
     public dataVersion: number = 0; // Incremented when market data changes (streaming mode)
@@ -207,6 +209,7 @@ export class Context {
             map: new PineMap(this),
             matrix: new PineMatrix(this),
             ticker: new Ticker(this),
+            strategy: new Strategy(this),
 
             syminfo: null,
             timeframe: new Timeframe(this),

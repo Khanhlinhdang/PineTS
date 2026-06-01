@@ -1,5 +1,5 @@
 // Known Pine Script namespaces that might be used as functions or objects
-export const KNOWN_NAMESPACES = ['ta', 'math', 'request', 'array', 'input', 'color', 'ticker'];
+export const KNOWN_NAMESPACES = ['ta', 'math', 'request', 'array', 'input', 'color', 'ticker', 'strategy'];
 
 // This is used to transform ns() calls to ns.any() calls
 // Entries with a __value property also support dual-use as variables (e.g. time, na)
@@ -49,10 +49,7 @@ export const ASYNC_METHODS = ['request.security', 'request.security_lower_tf'];
 // stripped during pine2js, so this is comment-safe. Each entry is matched as a
 // whole-word identifier-path (\b-anchored), so `chart.left_visible_bar_time` is a hit
 // but a user identifier accidentally containing the substring is not.
-export const VIEWPORT_DEPENDENT_BUILTINS = [
-    'chart.left_visible_bar_time',
-    'chart.right_visible_bar_time',
-];
+export const VIEWPORT_DEPENDENT_BUILTINS = ['chart.left_visible_bar_time', 'chart.right_visible_bar_time'];
 
 // Factory methods that create objects with side effects (format: 'namespace.method')
 // When used inside `var` declarations, these calls are wrapped in arrow functions
@@ -77,11 +74,35 @@ export const FACTORY_METHODS = [
 export const NAMESPACE_COLLISION_NAMES = new Set([
     ...KNOWN_NAMESPACES,
     // NAMESPACES_LIKE that are actual function-call namespaces
-    'fill', 'plot', 'hline', 'label', 'line',
+    'fill',
+    'plot',
+    'hline',
+    'label',
+    'line',
     // Drawing/enum namespaces with member access
-    'size', 'extend', 'display', 'format', 'location', 'shape', 'text', 'xloc', 'yloc',
-    'linefill', 'polyline', 'box', 'table', 'map', 'matrix', 'chart',
-    'alert', 'barstate', 'syminfo', 'timeframe', 'strategy', 'log', 'str',
+    'size',
+    'extend',
+    'display',
+    'format',
+    'location',
+    'shape',
+    'text',
+    'xloc',
+    'yloc',
+    'linefill',
+    'polyline',
+    'box',
+    'table',
+    'map',
+    'matrix',
+    'chart',
+    'alert',
+    'barstate',
+    'syminfo',
+    'timeframe',
+    'strategy',
+    'log',
+    'str',
 ]);
 
 // JavaScript reserved keywords that ARE valid Pine identifiers but invalid as
@@ -96,10 +117,29 @@ export const NAMESPACE_COLLISION_NAMES = new Set([
 // Excludes `this` — special-cased elsewhere as the implicit first parameter
 // of Pine `method` declarations.
 export const JS_RESERVED_WORDS = new Set([
-    'await', 'debugger', 'default', 'delete', 'extends', 'finally',
-    'function', 'implements', 'instanceof', 'interface', 'let', 'new',
-    'package', 'private', 'protected', 'public', 'static', 'super',
-    'throw', 'typeof', 'void', 'with', 'yield',
+    'await',
+    'debugger',
+    'default',
+    'delete',
+    'extends',
+    'finally',
+    'function',
+    'implements',
+    'instanceof',
+    'interface',
+    'let',
+    'new',
+    'package',
+    'private',
+    'protected',
+    'public',
+    'static',
+    'super',
+    'throw',
+    'typeof',
+    'void',
+    'with',
+    'yield',
 ]);
 
 // All known data variables in the context
@@ -123,7 +163,6 @@ export const CONTEXT_PINE_VARS = [
 
     //declarations
     'indicator',
-    'strategy',
     'library',
 
     //
