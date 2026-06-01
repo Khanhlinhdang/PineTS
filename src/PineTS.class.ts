@@ -6,7 +6,7 @@ import { IProvider, ISymbolInfo } from './marketData/IProvider';
 import { Context } from './Context.class';
 import { Series } from './Series';
 import { Indicator } from './Indicator';
-import { processStrategyOrders } from './namespaces/strategy/utils';
+import { processStrategyOrders, processExitOrders } from './namespaces/strategy/utils';
 
 // ── Timeframe duration utility ──────────────────────────────────────
 //prettier-ignore
@@ -1075,9 +1075,13 @@ export class PineTS {
             context.data.closeTime.data.push(this.closeTime[i]);
             context.data.bar_index.data.push(i);
 
-            // Process strategy orders at the START of the bar (filling at Open)
+            // Process strategy orders at the START of the bar (filling at Open).
+            // Entry-category orders fill first (market/limit/stop pending orders),
+            // then exit-category orders evaluate against the bar's open/high/low
+            // (conditional TP/SL/trailing exits + close()/close_all() markets).
             if (context.strategy) {
                 processStrategyOrders(context);
+                processExitOrders(context);
             }
 
             const result = await transpiledFn(context);

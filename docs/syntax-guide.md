@@ -177,6 +177,57 @@ if (close > open) {
 }
 ```
 
+### Always brace your `if` / `for` / `while` bodies
+
+> **The rule:** In the JS callback form, **every control-flow body must be wrapped in `{ ... }`** — even single statements.
+
+JavaScript itself allows brace-less single-statement bodies (`if (cond) stmt;`). PineTS does not. If the body contains any Pine namespace call (`strategy.entry`, `ta.sma`, `plot`, `line.new`, `label.new`, ...), brace-less bodies produce silent bugs.
+
+**Why.** The PineTS transpiler rewrites Pine-style calls into a "compute first, use second" form — `strategy.entry('e', strategy.long, 1)` becomes a few `const p_N = strategy.param(...)` declarations followed by `const temp_N = strategy.entry(...)`. Those `pN` / `temp_N` declarations are **hoisted**: they must be emitted *before* the statement that needs them, and they must land in the smallest enclosing `BlockStatement` so that they execute only when that block does.
+
+The transpiler's hoisting walker only has a hook for `BlockStatement`. When the body of an `if` / `for` / `while` is a plain single statement (brace-less), there is no inner block to catch the hoisted declarations — they fall through to the next enclosing block (typically the parent function body) and end up executing on every bar, ignoring the condition or the loop counter.
+
+Pine source isn't affected because Pine's indentation-scoped bodies are *always* emitted as a `BlockStatement` by the Pine → JS codegen, regardless of how many statements they contain.
+
+#### Example 1 — `if` body
+
+```javascript
+// ❌ WRONG — strategy.entry() fires on EVERY bar.
+if ($.idx === 1) strategy.entry('e', strategy.long, 1);
+
+// ✅ CORRECT
+if ($.idx === 1) { strategy.entry('e', strategy.long, 1); }
+```
+
+What the transpiler emits in the wrong case:
+
+```javascript
+const temp_3 = strategy.entry(p2, temp_2, p3);   // ← runs every bar
+if ($.idx === 1) temp_3;                          // ← reads value, no-op
+```
+
+#### Example 2 — `for` body
+
+```javascript
+// ❌ WRONG — strategy.order() runs ONCE, not 3 times.
+for (let k = 0; k < 3; k++) strategy.order('o' + k, strategy.long, 1);
+
+// ✅ CORRECT
+for (let k = 0; k < 3; k++) { strategy.order('o' + k, strategy.long, 1); }
+```
+
+What the transpiler emits in the wrong case:
+
+```javascript
+const p2 = strategy.param('o' + k, ...);          // ← `k` not in scope yet — ReferenceError
+const temp_3 = strategy.order(p2, temp_2, p3);    // ← runs once, before the loop
+for (let k = 0; k < 3; k++) temp_3;               // ← loop reads the same temp
+```
+
+The same applies to `while` bodies and brace-less `else` branches.
+
+> If a single-statement body contains *no* Pine namespace call (pure JS arithmetic, plain variable assignment, a `console.log`, etc.), no hoisting happens and brace-less is harmless. The safe default is to always use braces.
+
 ## Built-in Variables
 
 PineTS exposes Pine Script's built-in variables through the `context` object, but usually, you destructure them for easier access.

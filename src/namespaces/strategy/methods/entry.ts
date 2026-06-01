@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2025 Alaa-eddine KADDOURI
+
+import { calculateOrderQty, parseDirection, wouldExceedPyramiding } from '../utils';
+import { Order } from '../types';
+import { Series } from '../../../Series';
+import { parseArgsForPineParams } from '../../utils';
+
+/**
+ * Pine signature:
+ *   strategy.entry(id, direction, qty, limit, stop, oca_name, oca_type,
+ *                  comment, alert_message, disable_alert) → void
+ *
+ * Differences vs strategy.order:
+ *   - Respects the strategy() declaration's `pyramiding` cap (no-op when
+ *     the direction's open-trade count already equals the cap).
+ *   - Auto-reverses the current position when direction is opposite:
+ *     the resulting market order's qty is sized to close the existing
+ *     position AND open a new one of the requested qty in the new direction.
+ */
+const ENTRY_SIGNATURES = [
+    ['id', 'direction', 'qty', 'limit', 'stop', 'oca_name', 'oca_type', 'comment', 'alert_message', 'disable_alert'],
+];
+const ENTRY_ARGS_TYPES = {
+    id: 'string',
+    direction: 'series',
+    qty: 'series',
+    limit: 'series',
+    stop: 'series',
+    oca_name: 'string',
+    oca_type: 'string',
+    comment: 'string',
+    alert_message: 'string',
+    disable_alert: 'boolean',
+};
+
+export function entry(context: any) {
+    return (...args: any[]) => {
+        if (!context.strategy) {
+            throw new Error('strategy.entry() called before strategy() declaration');
+        }
+        const parsed = parseArgsForPineParams<any>(args, ENTRY_SIGNATURES, ENTRY_ARGS_TYPES);
+
+        const extractValue = (val: any) => {
+            if (val === undefined || val === null) return val;
+            if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') return val;
+            if (typeof val === 'function') return val();
+            if (val instanceof Series) return val.get(0);
+            if (Array.isArray(val)) return val[val.length - 1];
+            if (typeof val === 'object' && val.get !== undefined) return val.get(0);
+            return val;
+        };
+
+        const idValue       = extractValue(parsed.id);
+        const directionVal  = extractValue(parsed.direction);
+        const qtyValue      = extractValue(parsed.qty);
+        const limitValue    = extractValue(parsed.limit);
+        const stopValue     = extractValue(parsed.stop);
+        const ocaName       = extractValue(parsed.oca_name);
+        const ocaType       = extractValue(parsed.oca_type);
+        const commentValue  = extractValue(parsed.comment);
+
+        const dir = parseDirection(directionVal);
+        const strategy = context.strategy;
+        const currentSize = strategy.position_size;
+
+        // Pyramiding cap: only enforced when ADDING to a same-direction position
+        // (not when opening from flat or reversing). Pine's semantic.
+        const isAddingSameSide = Math.sign(currentSize) === dir && currentSize !== 0;
+        if (isAddingSameSide && wouldExceedPyramiding(strategy, dir)) {
+            return; // no-op
+        }
+
+        // Determine the order qty. For a reversal (direction differs from
+        // current position), Pine ADDS the absolute current position to the
+        // requested qty so that one market order both flattens the prior
+        // position AND opens the new direction with the requested size.
+        const currentPrice = Series.from(context.data.close).get(0);
+        const baseQty = calculateOrderQty(context, qtyValue, dir, currentPrice);
+
+        const isReversal = currentSize !== 0 && Math.sign(currentSize) !== dir;
+        const totalQty = isReversal ? Math.abs(currentSize) + baseQty : baseQty;
+
+        // Determine order type from limit/stop presence
+        let orderType: 'market' | 'limit' | 'stop' | 'stop-limit' = 'market';
+        if (limitValue !== undefined && stopValue !== undefined) {
+            orderType = 'stop-limit';
+        } else if (limitValue !== undefined) {
+            orderType = 'limit';
+        } else if (stopValue !== undefined) {
+            orderType = 'stop';
+        }
+
+        const currentTime = Series.from(context.data.openTime).get(0);
+
+        const orderObj: Order = {
+            id: idValue,
+            direction: dir,
+            qty: totalQty,
+            type: orderType,
+            limit: limitValue,
+            stop: stopValue,
+            bar: context.idx,
+            time: currentTime,
+            status: 'pending',
+            category: 'entry',
+            oca_name: ocaName,
+            oca_type: ocaType as 'cancel' | 'reduce' | 'none' | undefined,
+            comment: commentValue,
+        };
+
+        strategy.pending_orders.push(orderObj);
+    };
+}

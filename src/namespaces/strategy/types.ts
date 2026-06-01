@@ -97,6 +97,37 @@ export interface Order {
     fill_bar?: number;
     fill_time?: number;
     status: 'pending' | 'filled' | 'cancelled';
+
+    // Distinguishes pending entries (market/limit/stop) from conditional
+    // exit orders that ride on open positions. Defaults to 'entry' when
+    // unset for backward-compat.
+    category?: 'entry' | 'exit';
+
+    // Exit-specific fields (only set when category === 'exit').
+    // strategy.exit() parameters: profit (TP in ticks), loss (SL in ticks),
+    // limit/stop (price-based TP/SL), trail_price/trail_offset/trail_points
+    // (trailing-stop trio), from_entry (which entries to attach to;
+    // empty/"" or undefined means "all"), qty / qty_percent (partial close).
+    profit?: number;             // TP in ticks
+    loss?: number;               // SL in ticks
+    trail_price?: number;        // price level at which trailing arms
+    trail_offset?: number;       // offset in ticks the trail rides at
+    trail_points?: number;       // alternative trail-arm: entry_price + N ticks
+    from_entry?: string;         // entry id this exit attaches to ('' = all)
+    qty_percent?: number;        // percent of matching position to close
+    comment_profit?: string;
+    comment_loss?: string;
+    comment_trailing?: string;
+    alert_message?: string;
+    alert_profit?: string;
+    alert_loss?: string;
+    alert_trailing?: string;
+    disable_alert?: boolean;
+    immediately?: boolean;       // strategy.close/close_all: fill at current bar's close
+    // Internal: tracks the running peak used by trailing-stop logic.
+    // For a long: highest high seen since the trail armed; for a short: lowest low.
+    trail_peak?: number;
+    trail_armed?: boolean;
 }
 
 /**
@@ -140,4 +171,32 @@ export interface StrategyState {
     // Internal trackers for the peak calculations above
     equity_peak: number;              // running high-water mark
     equity_trough: number;            // running low-water mark since last peak
+
+    // Trade-stat counters — updated each time a trade closes
+    wintrades: number;                // count of closed trades with profit > 0
+    losstrades: number;               // count of closed trades with profit < 0
+    eventrades: number;               // count of closed trades with profit === 0
+    wintrades_total_profit: number;   // sum of profits across winning closed trades (for avg)
+    losstrades_total_loss: number;    // sum of |loss| across losing closed trades (for avg)
+
+    // Position-size peaks (in contracts/units)
+    max_contracts_held_all: number;   // max(|position_size|) seen
+    max_contracts_held_long: number;  // max(position_size) where > 0
+    max_contracts_held_short: number; // max(|position_size|) where < 0
+
+    // Pre-trade risk-management filters (configured via strategy.risk.*).
+    // Each rule is optional; if undefined, the rule does not apply.
+    risk_rules: {
+        allow_entry_in?: 'long' | 'short' | 'all';
+        max_cons_loss_days?: { count: number; alert_message?: string };
+        max_drawdown?: { value: number; type: 'cash' | 'percent_of_equity' };
+        max_intraday_filled_orders?: { count: number; alert_message?: string };
+        max_intraday_loss?: { value: number; type: 'cash' | 'percent_of_equity' };
+        max_position_size?: number;
+    };
+
+    // Once max_drawdown / max_intraday_loss / max_cons_loss_days triggers, all
+    // further entries are blocked for the rest of the run (or trading day for
+    // intraday rules — TODO: day rollover detection).
+    risk_halted: boolean;
 }
