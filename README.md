@@ -351,11 +351,10 @@ PineTS aims for complete Pine Script® API compatibility. Current status:
 | ✅     | Arrays, matrices, and maps                |
 | ✅     | Real-time streaming                       |
 | ✅     | Multi-timeframe with `request.security()` |
-| 🚧     | Strategy backtesting engine               |
+| ✅     | Strategy namespace                        |
+| ✅     | Market data Providers                     |
 | 🚧     | Additional data providers                 |
 | 🎯     | Pine Script® v6 full compatibility        |
-| 🎯     | Market data Providers                     |
-| 🎯     | Trading Connectors                        |
 
 ---
 
@@ -379,11 +378,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guidelines.
 Thanks to all PineTS contributors:
 
 <p align="left">
-  <a href="https://github.com/alaa-eddine"><img src="https://avatars.githubusercontent.com/u/1016513?v=4&s=64" width="64" height="64" alt="alaa-eddine" title="alaa-eddine" style="border-radius: 50%;"/></a> 
-  <a href="https://github.com/dcaoyuan"><img src="https://avatars.githubusercontent.com/u/271571?v=4&s=64" width="64" height="64" alt="dcaoyuan" title="dcaoyuan" style="border-radius: 50%;"/></a> 
+<a href="https://github.com/alaa-eddine"><img src="https://avatars.githubusercontent.com/u/1016513?v=4&s=64" width="64" height="64" alt="alaa-eddine" title="alaa-eddine" style="border-radius: 50%;"/></a> 
+<a href="https://github.com/dcaoyuan"><img src="https://avatars.githubusercontent.com/u/271571?v=4&s=64" width="64" height="64" alt="dcaoyuan" title="dcaoyuan" style="border-radius: 50%;"/></a> 
 <a href="https://github.com/C9Bad"><img src="https://avatars.githubusercontent.com/u/57975070?v=4&s=64" width="64" height="64" alt="C9Bad" title="C9Bad" style="border-radius: 50%;"/></a> 
 <a href="https://github.com/aakash-code"><img src="https://avatars.githubusercontent.com/u/71116743?v=4&s=64" width="64" height="64" alt="aakash-code" title="aakash-code" style="border-radius: 50%;"/></a>
-
+<a href="https://github.com/alexgrover"><img src="https://avatars.githubusercontent.com/u/41912104?v=4&s=64" width="64" height="64" alt="alexgrover" title="alexgrover" style="border-radius: 50%;"/></a>
+<a href="https://github.com/amoradi"><img src="https://avatars.githubusercontent.com/u/6855005?v=4&s=64" width="64" height="64" alt="amoradi" title="amoradi" style="border-radius: 50%;"/></a>
+<a href="https://github.com/smack369"><img src="https://avatars.githubusercontent.com/u/126825390?v=4&s=64" width="64" height="64" alt="smack369" title="smack369" style="border-radius: 50%;"/></a>
+<a href="https://github.com/NexusAlien"><img src="https://avatars.githubusercontent.com/u/181855714?v=4&s=64" width="64" height="64" alt="NexusAlien" title="NexusAlien" style="border-radius: 50%;"/></a>
 </p>
 
 ---
