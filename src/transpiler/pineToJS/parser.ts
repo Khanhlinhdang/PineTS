@@ -461,7 +461,7 @@ export class Parser {
                 continue;
             }
 
-            const memberName = this.expect(TokenType.IDENTIFIER).value;
+            const memberName = this.expectIdentifierOrContextual().value;
             let memberTitle: string | null = null;
             if (this.match(TokenType.OPERATOR, '=')) {
                 this.advance(); // consume '='
@@ -553,7 +553,7 @@ export class Parser {
             this.advance(); // [
             varType += '[]';
             this.advance(); // ]
-            name = this.expect(TokenType.IDENTIFIER).value;
+            name = this.expectIdentifierOrContextual().value;
         } else if (
             this.peek().type === TokenType.IDENTIFIER &&
             (this.peek(1).type === TokenType.DOT || this.peek(1).type === TokenType.IDENTIFIER || (this.peek(1).type === TokenType.OPERATOR && this.peek(1).value === '<'))
@@ -572,7 +572,7 @@ export class Parser {
                 this.advance(); // consume [
                 this.advance(); // consume ]
                 varType += '[]';
-                name = this.expect(TokenType.IDENTIFIER).value;
+                name = this.expectIdentifierOrContextual().value;
             }
             // Handle generic type syntax: array<float>, map<string, int>, etc.
             else if (this.match(TokenType.OPERATOR, '<')) {
@@ -602,9 +602,9 @@ export class Parser {
                     this.advance();
                 }
 
-                name = this.expect(TokenType.IDENTIFIER).value;
+                name = this.expectIdentifierOrContextual().value;
             } else {
-                name = this.expect(TokenType.IDENTIFIER).value;
+                name = this.expectIdentifierOrContextual().value;
             }
         } else if (this.peek().type === TokenType.IDENTIFIER) {
             // No type: var name = ...
@@ -751,7 +751,7 @@ export class Parser {
             }
         }
 
-        let name = this.expect(TokenType.IDENTIFIER).value;
+        let name = this.expectIdentifierOrContextual().value;
         if (this.functionNames.has(name)) {
             name = name + '_var';
         }
@@ -783,7 +783,7 @@ export class Parser {
         ) {
             this.advance(); // consume ','
             this.skipNewlines(true);
-            let nextName = this.expect(TokenType.IDENTIFIER).value;
+            let nextName = this.expectIdentifierOrContextual().value;
             if (this.functionNames.has(nextName)) {
                 nextName = nextName + '_var';
             }
@@ -848,7 +848,7 @@ export class Parser {
                 paramType = paramType ? paramType + ' ' + arrayType : arrayType;
             }
 
-            const paramName = this.expect(TokenType.IDENTIFIER).value;
+            const paramName = this.expectIdentifierOrContextual().value;
             const param = new Identifier(paramName);
             if (paramType) param.varType = paramType;
 
@@ -899,7 +899,7 @@ export class Parser {
             returnType = this.advance().value;
         }
 
-        const name = this.expect(TokenType.IDENTIFIER).value;
+        const name = this.expectIdentifierOrContextual().value;
         this.expect(TokenType.LPAREN);
 
         const params = [];
@@ -940,7 +940,7 @@ export class Parser {
                 paramType = paramType ? paramType + ' ' + arrayType : arrayType;
             }
 
-            const paramName = this.expect(TokenType.IDENTIFIER).value;
+            const paramName = this.expectIdentifierOrContextual().value;
             const param = new Identifier(paramName);
             if (paramType) param.varType = paramType;
 
@@ -1238,7 +1238,7 @@ export class Parser {
             const elements = [];
             while (!this.match(TokenType.RBRACKET)) {
                 this.skipNewlines();
-                elements.push(new Identifier(this.expect(TokenType.IDENTIFIER).value));
+                elements.push(new Identifier(this.expectIdentifierOrContextual().value));
                 if (this.match(TokenType.COMMA)) {
                     this.advance();
                 }
@@ -1248,7 +1248,7 @@ export class Parser {
             isDestructuring = true;
         } else {
             // Simple identifier: for i in array or for i = 0 to 10
-            const varName = this.expect(TokenType.IDENTIFIER).value;
+            const varName = this.expectIdentifierOrContextual().value;
             loopVar = new Identifier(varName);
         }
 
@@ -1422,7 +1422,7 @@ export class Parser {
 
         while (!this.match(TokenType.RBRACKET)) {
             this.skipNewlines();
-            let name = this.expect(TokenType.IDENTIFIER).value;
+            let name = this.expectIdentifierOrContextual().value;
             if (this.functionNames.has(name)) {
                 name = name + '_var';
             }
@@ -1735,8 +1735,12 @@ export class Parser {
             return new Literal(bool.value);
         }
 
-        // Identifier
-        if (this.match(TokenType.IDENTIFIER)) {
+        // Identifier — also accept contextual keywords (method, type, enum) used as
+        // value references, e.g. `switch method` where `method` is a parameter name.
+        if (
+            this.match(TokenType.IDENTIFIER) ||
+            (token.type === TokenType.KEYWORD && Parser.CONTEXTUAL_KEYWORDS.has(token.value))
+        ) {
             const id = this.advance();
             let name = id.value;
             if (

@@ -14,8 +14,8 @@ export class PolylineObject {
     public curved: boolean;
     public closed: boolean;
     public xloc: string;
-    public line_color: string;
-    public fill_color: string;
+    public line_color: any;
+    public fill_color: any;
     public line_style: string;
     public line_width: number;
     public force_overlay: boolean;
@@ -28,8 +28,8 @@ export class PolylineObject {
         curved: boolean = false,
         closed: boolean = false,
         xloc: string = 'bi',
-        line_color: string = '#2962ff',
-        fill_color: string = '',
+        line_color: any = '#2962ff',
+        fill_color: any = '',
         line_style: string = 'style_solid',
         line_width: number = 1,
         force_overlay: boolean = false,

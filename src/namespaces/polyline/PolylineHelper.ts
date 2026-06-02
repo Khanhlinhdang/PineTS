@@ -95,15 +95,18 @@ export class PolylineHelper {
         let line_width: any = 1;
         let force_overlay: any = false;
 
+        const hasOwn = (obj: any, key: string) =>
+            Object.prototype.hasOwnProperty.call(obj, key);
+
         const applyOpts = (opts: any) => {
-            curved = opts.curved ?? curved;
-            closed = opts.closed ?? closed;
-            xloc = opts.xloc ?? xloc;
-            line_color = opts.line_color ?? line_color;
-            fill_color = opts.fill_color ?? fill_color;
-            line_style = opts.line_style ?? line_style;
-            line_width = opts.line_width ?? line_width;
-            force_overlay = opts.force_overlay ?? force_overlay;
+            if (hasOwn(opts, 'curved')) curved = opts.curved;
+            if (hasOwn(opts, 'closed')) closed = opts.closed;
+            if (hasOwn(opts, 'xloc')) xloc = opts.xloc;
+            if (hasOwn(opts, 'line_color')) line_color = opts.line_color;
+            if (hasOwn(opts, 'fill_color')) fill_color = opts.fill_color;
+            if (hasOwn(opts, 'line_style')) line_style = opts.line_style;
+            if (hasOwn(opts, 'line_width')) line_width = opts.line_width;
+            if (hasOwn(opts, 'force_overlay')) force_overlay = opts.force_overlay;
         };
 
         // Detect trailing named-options object.
@@ -127,14 +130,14 @@ export class PolylineHelper {
             const positional = isTrailingOpts ? args.slice(0, -1) : args;
 
             points = positional[0];
-            curved = positional[1] ?? curved;
-            closed = positional[2] ?? closed;
-            xloc = positional[3] ?? xloc;
-            line_color = positional[4] ?? line_color;
-            fill_color = positional[5] ?? fill_color;
-            line_style = positional[6] ?? line_style;
-            line_width = positional[7] ?? line_width;
-            force_overlay = positional[8] ?? force_overlay;
+            if (positional.length > 1) curved = positional[1];
+            if (positional.length > 2) closed = positional[2];
+            if (positional.length > 3) xloc = positional[3];
+            if (positional.length > 4) line_color = positional[4];
+            if (positional.length > 5) fill_color = positional[5];
+            if (positional.length > 6) line_style = positional[6];
+            if (positional.length > 7) line_width = positional[7];
+            if (positional.length > 8) force_overlay = positional[8];
 
             // Named opts override positional args
             if (isTrailingOpts) {

@@ -102,6 +102,21 @@ export class LineHelper {
         return val;
     }
 
+    /**
+     * Resolve a color value, PRESERVING na markers so renderers can
+     * detect "no color". Pine emits na as null (from `color(na)` —
+     * `color.any` returns null) or NaN (from raw `na` literal). Both
+     * must survive into the plot data — collapsing them to a default
+     * forces the renderer to paint a visible line where the script
+     * asked for none. Mirrors Box/Polyline `_resolveColor`.
+     */
+    private _resolveColor(val: any): any {
+        const resolved = this._resolve(val);
+        if (resolved === null || resolved === undefined) return resolved;
+        if (typeof resolved === 'number' && isNaN(resolved)) return NaN;
+        return resolved;
+    }
+
     private _createLine(
         x1: number,
         y1: number,
@@ -118,7 +133,7 @@ export class LineHelper {
         const ln = new LineObject(
             x1, y1, x2, y2, xloc,
             this._resolve(extend),
-            this._resolve(color),
+            this._resolveColor(color),
             this._resolve(style),
             this._resolve(width) || 1,
             force_overlay,
@@ -249,7 +264,7 @@ export class LineHelper {
 
     @silentInSecondary
     set_color(id: LineObject, color: string): void {
-        if (id && !id._deleted) id.color = this._resolve(color);
+        if (id && !id._deleted) id.color = this._resolveColor(color);
     }
 
     @silentInSecondary
