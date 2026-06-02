@@ -26,7 +26,7 @@
 
 ### Notes (strategy vs TradingView)
 
-The **`strategy.*`** surface is implemented 1:1. Numeric output may still diverge from TV in specific fields (tracked iteration items, not missing API): **`margin_liquidation_price`** approximation, same-currency **`convert_to_*`** passthrough vs TV **`na`**, OCA auto-cancel/reduce not yet enforced on fill (Phase 7), commission sub-cent rounding, and per-trade **`max_drawdown` / `max_runup`** accounting on adjacent-bar trades. See **`docs/strategy.md`** and **`docs/api-coverage/strategy.md`**.
+The **`strategy.*`** surface is implemented 1:1. Numeric output may still diverge from TV in specific fields (tracked iteration items, not missing API): **`margin_liquidation_price`** approximation, same-currency **`convert_to_*`** passthrough vs TV **`na`**, OCA auto-cancel/reduce not yet enforced on fill, commission sub-cent rounding, and per-trade **`max_drawdown` / `max_runup`** accounting on adjacent-bar trades. See **`docs/strategy.md`** and **`docs/api-coverage/strategy.md`**.
 
 ---
 
