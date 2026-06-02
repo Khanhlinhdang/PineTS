@@ -14,7 +14,8 @@ PineTS enables algorithmic traders, quant developers, and platforms to integrate
   <a href="https://www.npmjs.com/package/pinets"><img src="https://img.shields.io/npm/v/pinets.svg?style=flat-square" alt="npm version"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-AGPL--3.0%20%2F%20Commercial-blue.svg?style=flat-square" alt="License"></a>
   <a href="./.github/badges/coverage.svg"><img src="./.github/badges/coverage.svg" alt="Coverage"></a>
-  <a href="https://quantforgeorg.github.io/PineTS/"><img src="https://img.shields.io/badge/docs-github--pages-blue?style=flat-square" alt="Documentation"></a>
+  <a href="https://github.com/LuxAlgo/PineTS#api-coverage"><img src="./.github/badges/api-coverage.svg" alt="API Coverage"></a>
+  <a href="https://luxalgo.github.io/PineTS/"><img src="https://img.shields.io/badge/docs-github--pages-blue?style=flat-square" alt="Documentation"></a>
 </p>
 
 <p align="center">
@@ -58,9 +59,9 @@ plot(ta.ema(close, 21), "Slow", color.red)
 
 | Challenge                                   | PineTS Solution                                      |
 | ------------------------------------------- | ---------------------------------------------------- |
-| Pine Script® only runs on TradingView®        | Run indicators on your own infrastructure            |
+| Pine Script® only runs on TradingView®      | Run indicators on your own infrastructure            |
 | Can't integrate indicators with custom apps | Full JavaScript/TypeScript integration               |
-| Limited to TradingView®'s data sources       | Use any data source (Binance, custom APIs, CSV)      |
+| Limited to TradingView®'s data sources      | Use any data source (Binance, custom APIs, CSV)      |
 | No programmatic access to indicator values  | Get raw values for backtesting, alerts, ML pipelines |
 | Can't run indicators server-side            | Works in Node.js, Deno, Bun, browsers                |
 
@@ -345,14 +346,14 @@ PineTS aims for complete Pine Script® API compatibility. Current status:
 
 | Status | Feature                                   |
 | ------ | ----------------------------------------- |
-| ✅     | Native Pine Script® v5/v6 support          |
+| ✅     | Native Pine Script® v5/v6 support         |
 | ✅     | 60+ technical analysis functions          |
 | ✅     | Arrays, matrices, and maps                |
 | ✅     | Real-time streaming                       |
 | ✅     | Multi-timeframe with `request.security()` |
 | 🚧     | Strategy backtesting engine               |
 | 🚧     | Additional data providers                 |
-| 🎯     | Pine Script® v6 full compatibility         |
+| 🎯     | Pine Script® v6 full compatibility        |
 | 🎯     | Market data Providers                     |
 | 🎯     | Trading Connectors                        |
 
