@@ -21,11 +21,8 @@ A commercial license removes the copyleft obligations and allows you to:
 
 ## Get a Commercial License
 
-For pricing, terms, and inquiries:
-
-- **Contact form**: [https://quantforge.org/contact/](https://quantforge.org/contact/)
-- **Category**: Select _Licensing_ in the contact form
+For pricing, terms, and inquiries, Please [reach out](mailto:business@luxalgo.com) directly to our enterprise team.
 
 ---
 
-_Copyright (c) 2025-present Alaa-eddine KADDOURI / QuantForge_
+_Copyright (c) 2025-present LuxAlgo_
