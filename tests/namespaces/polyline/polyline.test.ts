@@ -66,6 +66,24 @@ describe('POLYLINE Namespace', () => {
         expect(result.pl_line_width[0]).toBe(3);
     });
 
+    it('polyline.new() preserves na line_color from raw na and color(na)', async () => {
+        const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', null, new Date('2025-01-01').getTime(), new Date('2025-11-20').getTime());
+
+        const { plots } = await pineTS.run((context) => {
+            var pts = array.from(
+                chart.point.from_index(0, 50000),
+                chart.point.from_index(5, 60000),
+            );
+            polyline.new(pts, { line_color: na });
+            polyline.new(pts, { line_color: color(na) });
+            return {};
+        });
+
+        const polylines = plots['__polylines__'].data[0].value;
+        expect(polylines[0].line_color).toBeNaN();
+        expect(polylines[1].line_color).toBeNull();
+    });
+
     it('polyline.new() with chart.point objects stores points', async () => {
         const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', null, new Date('2025-01-01').getTime(), new Date('2025-11-20').getTime());
 

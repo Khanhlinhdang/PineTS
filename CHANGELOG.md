@@ -1,5 +1,35 @@
 # Change Log
 
+## [0.9.17] - 2026-06-02 - Strategy Namespace, `updateTail` Var Snapshots & Drawing `color(na)` Semantics
+
+### Added
+
+- **`strategy.*` namespace (full surface)**: Complete Pine Script strategy runtime — **`strategy()`** declaration, order primitives (**`strategy.entry`**, **`strategy.exit`**, **`strategy.order`**, **`strategy.close`** / **`close_all`**, **`strategy.cancel`** / **`cancel_all`**), direction constants (**`strategy.long`**, **`strategy.short`**), qty types (**`strategy.fixed`**, **`strategy.cash`**, **`strategy.percent_of_equity`**), account/position getters (**`equity`**, **`netprofit`**, **`openprofit`**, **`position_size`**, **`position_avg_price`**, **`position_entry_name`**, drawdown/runup stats, win/loss trade counts, etc.), indexed trade collections (**`strategy.closedtrades.*`**, **`strategy.opentrades.*`**), nested **`strategy.risk.*`** pre-trade filters, and conversion helpers (**`convert_to_account`**, **`convert_to_symbol`**, **`default_entry_qty`**). Engine in **`utils.ts`** with order fill simulation, commission/slippage hooks, and post-run state on **`context.strategy`**.
+- **Transpiler support for strategies**: **`strategy`** registered in **`KNOWN_NAMESPACES`** / **`NAMESPACE_COLLISION_NAMES`** so Pine `strategy()` calls and namespace members transpile correctly alongside indicators.
+- **`docs/strategy.md`**: Developer reference (quickstart, order primitives, **`context.strategy`** inspection, trade collections, risk management, conversion helpers, known divergences). Doc examples kept in lock-step with **`PineTS/.scratchpad/strategy-doc-examples.cjs`**.
+- **`docs/api-coverage/strategy.md`** & **`docs/api-coverage/pinescript-v6/strategy.json`**: Full API coverage checklist updated to ✅ across the namespace surface.
+- **`docs/syntax-guide.md`**: Strategy-related syntax notes for transpiler consumers.
+- **Tests**: **`tests/namespaces/strategy/basic.test.ts`**, **`order.test.ts`**; **`tests/core/updateTail-var-drift.test.ts`** for live-bar var stability.
+
+### Fixed
+
+- **`updateTail()` / `_runComplete()` var drift on live bar re-execution**: Replaced pop-based **`_removeLastResult`** rollback (which drifted when **`var`** accumulators were mutated in-place on re-execution) with **snapshot-restore** matching **`_runPaginated`**. **`_runComplete`** now splits execution — all bars except the last, **`_varSnapshot`**, then the last bar — so same-bar tick updates leave **`var`** state unchanged (e.g. a per-bar counter stays **N**, not **N+1**). **`updateTail()`** restores from snapshot when available, re-executes with the same split, and refreshes the snapshot; falls back to pop-based rollback only for contexts without a snapshot (contribution by [@NexusAlien](https://github.com/NexusAlien))
+
+- **`color(na)` semantics in `LineHelper` + `LinefillHelper`**: **`LineHelper`** now uses **`_resolveColor`** (like Box/Polyline) so raw **`na`** → **`NaN`** and **`color(na)`** → **`null`** are preserved instead of collapsing to inconsistent sentinels. **`LinefillHelper`** removed **`this._resolve(color) || ''`**, which wiped both signals to an empty string and made “invisible” anchor drawings render with the consumer’s default colour (e.g. LuxAlgo liquidity scripts using a fully-**`na`** box as a coord anchor).
+- **`polyline.new()` default / optional colours**: Named-options merging uses **`hasOwnProperty`** checks instead of **`??`**, so omitted keys no longer overwrite defaults; positional arity uses explicit length guards. **`line_color`** / **`fill_color`** on **`PolylineObject`** accept **`any`** so raw **`na`** (**`NaN`**) and **`color(na)`** (**`null`**) survive into plot payloads.
+- **Parser — contextual keywords as identifiers**: Enum members, typed declarations, function params, destructuring, and primary expressions accept contextual keywords (**`method`**, **`type`**, **`enum`**, etc.) when used as value references — fixes scripts like **`switch method`** where **`method`** is a parameter name.
+
+### Changed
+
+- **`context.strategy` state naming**: Result object fields aligned with Pine Script conventions (**`closedtrades`**, **`opentrades`**, lowercase getters) instead of camelCase internals; scalar getters (**`strategy.closedtrades`**, etc.) return counts while the full trade arrays remain on **`ctx.strategy`** for indexed access.
+- **API coverage badges**: Regenerated strategy / coverage SVG badges after the namespace landed.
+
+### Notes (strategy vs TradingView)
+
+The **`strategy.*`** surface is implemented 1:1. Numeric output may still diverge from TV in specific fields (tracked iteration items, not missing API): **`margin_liquidation_price`** approximation, same-currency **`convert_to_*`** passthrough vs TV **`na`**, OCA auto-cancel/reduce not yet enforced on fill, commission sub-cent rounding, and per-trade **`max_drawdown` / `max_runup`** accounting on adjacent-bar trades. See **`docs/strategy.md`** and **`docs/api-coverage/strategy.md`**.
+
+---
+
 ## [0.9.16] - 2026-05-13 - `request.security*` Script Slicing, `ticker.*` Namespace & Chart Visible Range
 
 ### Added

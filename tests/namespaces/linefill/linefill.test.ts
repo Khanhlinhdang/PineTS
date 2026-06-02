@@ -232,7 +232,7 @@ if barstate.islast
         expect(linefills[0].color).toBe('#ff5733');
     });
 
-    it('linefill.new with color(na) via named arg does not produce object color', async () => {
+    it('linefill.new with color(na) via named arg preserves null as the na marker', async () => {
         const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', null, sDate, eDate);
 
         const code = `
@@ -249,10 +249,14 @@ if barstate.islast
 
         const { plots } = await pineTS.run(code);
         const linefills = plots['__linefills__']?.data[0]?.value;
-        if (linefills && linefills.length > 0) {
-            const lf = linefills[linefills.length - 1];
-            // Should be a falsy value (null, empty string, etc.), not an object
-            expect(typeof lf.color).not.toBe('object');
-        }
+        expect(linefills).toBeDefined();
+        expect(linefills.length).toBeGreaterThan(0);
+
+        const lf = linefills[linefills.length - 1];
+        // color(na) must round-trip as `null` so renderers can detect
+        // "no color requested" and skip painting the element (used as an
+        // invisible positional anchor in some published scripts).
+        // Regression guard for commit 804b45f.
+        expect(lf.color).toBeNull();
     });
 });

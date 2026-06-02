@@ -14,7 +14,8 @@ PineTS enables algorithmic traders, quant developers, and platforms to integrate
   <a href="https://www.npmjs.com/package/pinets"><img src="https://img.shields.io/npm/v/pinets.svg?style=flat-square" alt="npm version"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-AGPL--3.0%20%2F%20Commercial-blue.svg?style=flat-square" alt="License"></a>
   <a href="./.github/badges/coverage.svg"><img src="./.github/badges/coverage.svg" alt="Coverage"></a>
-  <a href="https://quantforgeorg.github.io/PineTS/"><img src="https://img.shields.io/badge/docs-github--pages-blue?style=flat-square" alt="Documentation"></a>
+  <a href="https://github.com/LuxAlgo/PineTS#api-coverage"><img src="./.github/badges/api-coverage.svg" alt="API Coverage"></a>
+  <a href="https://luxalgo.github.io/PineTS/"><img src="https://img.shields.io/badge/docs-github--pages-blue?style=flat-square" alt="Documentation"></a>
 </p>
 
 <p align="center">
@@ -58,9 +59,9 @@ plot(ta.ema(close, 21), "Slow", color.red)
 
 | Challenge                                   | PineTS Solution                                      |
 | ------------------------------------------- | ---------------------------------------------------- |
-| Pine Script® only runs on TradingView®        | Run indicators on your own infrastructure            |
+| Pine Script® only runs on TradingView®      | Run indicators on your own infrastructure            |
 | Can't integrate indicators with custom apps | Full JavaScript/TypeScript integration               |
-| Limited to TradingView®'s data sources       | Use any data source (Binance, custom APIs, CSV)      |
+| Limited to TradingView®'s data sources      | Use any data source (Binance, custom APIs, CSV)      |
 | No programmatic access to indicator values  | Get raw values for backtesting, alerts, ML pipelines |
 | Can't run indicators server-side            | Works in Node.js, Deno, Bun, browsers                |
 
@@ -345,16 +346,15 @@ PineTS aims for complete Pine Script® API compatibility. Current status:
 
 | Status | Feature                                   |
 | ------ | ----------------------------------------- |
-| ✅     | Native Pine Script® v5/v6 support          |
+| ✅     | Native Pine Script® v5/v6 support         |
 | ✅     | 60+ technical analysis functions          |
 | ✅     | Arrays, matrices, and maps                |
 | ✅     | Real-time streaming                       |
 | ✅     | Multi-timeframe with `request.security()` |
-| 🚧     | Strategy backtesting engine               |
+| ✅     | Strategy namespace                        |
+| ✅     | Market data Providers                     |
 | 🚧     | Additional data providers                 |
-| 🎯     | Pine Script® v6 full compatibility         |
-| 🎯     | Market data Providers                     |
-| 🎯     | Trading Connectors                        |
+| 🎯     | Pine Script® v6 full compatibility        |
 
 ---
 
@@ -378,11 +378,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guidelines.
 Thanks to all PineTS contributors:
 
 <p align="left">
-  <a href="https://github.com/alaa-eddine"><img src="https://avatars.githubusercontent.com/u/1016513?v=4&s=64" width="64" height="64" alt="alaa-eddine" title="alaa-eddine" style="border-radius: 50%;"/></a> 
-  <a href="https://github.com/dcaoyuan"><img src="https://avatars.githubusercontent.com/u/271571?v=4&s=64" width="64" height="64" alt="dcaoyuan" title="dcaoyuan" style="border-radius: 50%;"/></a> 
+<a href="https://github.com/alaa-eddine"><img src="https://avatars.githubusercontent.com/u/1016513?v=4&s=64" width="64" height="64" alt="alaa-eddine" title="alaa-eddine" style="border-radius: 50%;"/></a> 
+<a href="https://github.com/dcaoyuan"><img src="https://avatars.githubusercontent.com/u/271571?v=4&s=64" width="64" height="64" alt="dcaoyuan" title="dcaoyuan" style="border-radius: 50%;"/></a> 
 <a href="https://github.com/C9Bad"><img src="https://avatars.githubusercontent.com/u/57975070?v=4&s=64" width="64" height="64" alt="C9Bad" title="C9Bad" style="border-radius: 50%;"/></a> 
 <a href="https://github.com/aakash-code"><img src="https://avatars.githubusercontent.com/u/71116743?v=4&s=64" width="64" height="64" alt="aakash-code" title="aakash-code" style="border-radius: 50%;"/></a>
-
+<a href="https://github.com/alexgrover"><img src="https://avatars.githubusercontent.com/u/41912104?v=4&s=64" width="64" height="64" alt="alexgrover" title="alexgrover" style="border-radius: 50%;"/></a>
+<a href="https://github.com/amoradi"><img src="https://avatars.githubusercontent.com/u/6855005?v=4&s=64" width="64" height="64" alt="amoradi" title="amoradi" style="border-radius: 50%;"/></a>
+<a href="https://github.com/smack369"><img src="https://avatars.githubusercontent.com/u/126825390?v=4&s=64" width="64" height="64" alt="smack369" title="smack369" style="border-radius: 50%;"/></a>
+<a href="https://github.com/NexusAlien"><img src="https://avatars.githubusercontent.com/u/181855714?v=4&s=64" width="64" height="64" alt="NexusAlien" title="NexusAlien" style="border-radius: 50%;"/></a>
 </p>
 
 ---
