@@ -1,6 +1,6 @@
 {
     "name": "pinets",
-    "version": "0.9.17",
+    "version": "0.9.18",
     "description": "Run Pine Script anywhere. PineTS is an open-source transpiler and runtime that brings Pine Script logic to Node.js and the browser with 1:1 syntax compatibility. Reliably write, port, and run indicators or strategies on your own infrastructure.",
     "keywords": [
         "Pine Script",
@@ -105,7 +105,7 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/QuantForgeOrg/PineTS.git"
+        "url": "git+https://github.com/LuxAlgo/PineTS.git"
     },
-    "homepage": "https://quantforge.org/pinets/"
+    "homepage": "https://luxalgo.com/"
 }
