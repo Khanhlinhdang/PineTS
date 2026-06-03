@@ -246,6 +246,14 @@ export class Parser {
         if (this.match(TokenType.KEYWORD, 'enum')) {
             stmt = this.parseEnumDefinition();
         }
+        // Import statement (currently treated as a no-op)
+        else if (this.match(TokenType.KEYWORD, 'import')) {
+            const importLine = this.peek().line;
+            while (this.peek().type !== TokenType.EOF && this.peek().line === importLine) {
+                this.advance();
+            }
+            return null;
+        }
         // Type definition
         else if (this.match(TokenType.KEYWORD, 'type')) {
             stmt = this.parseTypeDefinition();
@@ -989,8 +997,16 @@ export class Parser {
 
         // Check if it's a single expression (no INDENT)
         if (!this.match(TokenType.INDENT)) {
-            const expr = this.parseExpression();
-            return new BlockStatement([new ReturnStatement(expr)]);
+            const inline = this.parseStatementOrSequence();
+            if (Array.isArray(inline)) {
+                statements.push(...inline);
+            } else if (inline) {
+                statements.push(inline);
+            }
+            if (statements.length > 0) {
+                this._addImplicitReturn(statements);
+            }
+            return new BlockStatement(statements);
         }
 
         this.advance(); // consume INDENT

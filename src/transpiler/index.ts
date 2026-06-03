@@ -47,6 +47,7 @@
  */
 
 import * as acorn from 'acorn';
+import * as walk from 'acorn-walk';
 import * as astring from 'astring';
 import ScopeManager from './analysis/ScopeManager';
 import { injectImplicitImports } from './transformers/InjectionTransformer';
@@ -54,8 +55,215 @@ import { normalizeNativeImports } from './transformers/NormalizationTransformer'
 import { wrapInContextFunction } from './transformers/WrapperTransformer';
 import { transformNestedArrowFunctions, preProcessContextBoundVars, preProcessUdtRegistry, runAnalysisPass } from './analysis/AnalysisPass';
 import { runTransformationPass, transformEqualityChecks, propagateAsyncAwait } from './transformers/MainTransformer';
+import { createScopedVariableReference } from './transformers/ExpressionTransformer';
 import { extractPineScriptVersion, pineToJS } from './pineToJS/pineToJS.index';
 import { buildLtfSlices } from './slicing/buildLtfSlices';
+import { ASTFactory } from './utils/ASTFactory';
+
+function addPatternIdentifiers(pattern: any, names: Set<string>): void {
+    if (!pattern) return;
+    if (pattern.type === 'Identifier') {
+        names.add(pattern.name);
+        return;
+    }
+    if (pattern.type === 'AssignmentPattern') {
+        addPatternIdentifiers(pattern.left, names);
+        return;
+    }
+    if (pattern.type === 'RestElement') {
+        addPatternIdentifiers(pattern.argument, names);
+        return;
+    }
+    if (pattern.type === 'ArrayPattern') {
+        for (const element of pattern.elements ?? []) {
+            addPatternIdentifiers(element, names);
+        }
+        return;
+    }
+    if (pattern.type === 'ObjectPattern') {
+        for (const prop of pattern.properties ?? []) {
+            if (prop.type === 'Property') {
+                addPatternIdentifiers(prop.value, names);
+            } else if (prop.type === 'RestElement') {
+                addPatternIdentifiers(prop.argument, names);
+            }
+        }
+    }
+}
+
+function isScopeNode(node: any): boolean {
+    return !!node && (
+        node.type === 'Program' ||
+        node.type === 'BlockStatement' ||
+        node.type === 'FunctionDeclaration' ||
+        node.type === 'FunctionExpression' ||
+        node.type === 'ArrowFunctionExpression' ||
+        node.type === 'CatchClause'
+    );
+}
+
+function getNearestDeclarationScope(ancestors: any[], kind: string): any {
+    const wantFunctionScope = kind === 'var';
+    for (let i = ancestors.length - 1; i >= 0; i--) {
+        const node = ancestors[i];
+        if (!node) continue;
+        if (wantFunctionScope) {
+            if (
+                node.type === 'Program' ||
+                node.type === 'FunctionDeclaration' ||
+                node.type === 'FunctionExpression' ||
+                node.type === 'ArrowFunctionExpression'
+            ) {
+                return node;
+            }
+        } else if (isScopeNode(node)) {
+            return node;
+        }
+    }
+    return null;
+}
+
+function collectLexicalDeclarations(ast: any): WeakMap<object, Set<string>> {
+    const scopeDecls = new WeakMap<object, Set<string>>();
+    const ensureScope = (node: any): Set<string> => {
+        let decls = scopeDecls.get(node);
+        if (!decls) {
+            decls = new Set<string>();
+            scopeDecls.set(node, decls);
+        }
+        return decls;
+    };
+
+    walk.ancestor(ast, {
+        Program(node: any) {
+            ensureScope(node);
+        },
+        BlockStatement(node: any) {
+            ensureScope(node);
+        },
+        CatchClause(node: any) {
+            const decls = ensureScope(node);
+            addPatternIdentifiers(node.param, decls);
+        },
+        FunctionDeclaration(node: any, ancestors: any[]) {
+            ensureScope(node);
+            for (const param of node.params ?? []) {
+                addPatternIdentifiers(param, ensureScope(node));
+            }
+            const parentScope = getNearestDeclarationScope(ancestors.slice(0, -1), 'let');
+            if (node.id && parentScope) {
+                ensureScope(parentScope).add(node.id.name);
+            }
+        },
+        FunctionExpression(node: any) {
+            const decls = ensureScope(node);
+            if (node.id) {
+                decls.add(node.id.name);
+            }
+            for (const param of node.params ?? []) {
+                addPatternIdentifiers(param, decls);
+            }
+        },
+        ArrowFunctionExpression(node: any) {
+            const decls = ensureScope(node);
+            for (const param of node.params ?? []) {
+                addPatternIdentifiers(param, decls);
+            }
+        },
+        VariableDeclaration(node: any, ancestors: any[]) {
+            const ownerScope = getNearestDeclarationScope(ancestors.slice(0, -1), node.kind);
+            if (!ownerScope) return;
+            const decls = ensureScope(ownerScope);
+            for (const decl of node.declarations ?? []) {
+                addPatternIdentifiers(decl.id, decls);
+            }
+        },
+    });
+
+    return scopeDecls;
+}
+
+function repairResidualMemberAccess(ast: any, scopeManager: ScopeManager): void {
+    const scopeDecls = collectLexicalDeclarations(ast);
+    const isLexicallyDeclared = (name: string, ancestors: any[]) => {
+        for (let i = ancestors.length - 1; i >= 0; i--) {
+            const decls = scopeDecls.get(ancestors[i]);
+            if (decls?.has(name)) return true;
+        }
+        return false;
+    };
+
+    walk.ancestor(ast, {
+        CallExpression(node: any, ancestors: any[]) {
+            for (let i = 0; i < (node.arguments ?? []).length; i++) {
+                const arg = node.arguments[i];
+                if (
+                    arg?.type === 'Identifier' &&
+                    !scopeManager.isContextBound(arg.name) &&
+                    !scopeManager.isLoopVariable(arg.name) &&
+                    !isLexicallyDeclared(arg.name, ancestors)
+                ) {
+                    const [scopedName] = scopeManager.getVariable(arg.name);
+                    if (scopedName !== arg.name) {
+                        const scopedRef = createScopedVariableReference(arg.name, scopeManager);
+                        const isContextGet =
+                            node.callee?.type === 'MemberExpression' &&
+                            node.callee.object?.type === 'Identifier' &&
+                            node.callee.object.name === '$' &&
+                            node.callee.property?.name === 'get';
+                        node.arguments[i] = isContextGet && i === 0
+                            ? scopedRef
+                            : ASTFactory.createGetCall(scopedRef, 0);
+                    }
+                }
+            }
+        },
+        MemberExpression(node: any, ancestors: any[]) {
+            if (
+                node.computed &&
+                node.object?.type === 'Identifier' &&
+                !scopeManager.isContextBound(node.object.name) &&
+                !scopeManager.isLoopVariable(node.object.name) &&
+                !isLexicallyDeclared(node.object.name, ancestors)
+            ) {
+                const [scopedName] = scopeManager.getVariable(node.object.name);
+                if (scopeManager.isLocalSeriesVar(node.object.name)) {
+                    const plainId = ASTFactory.createIdentifier(node.object.name);
+                    plainId._skipTransformation = true;
+                    Object.assign(node, ASTFactory.createGetCall(plainId, node.property));
+                } else if (scopedName !== node.object.name) {
+                    Object.assign(
+                        node,
+                        ASTFactory.createGetCall(
+                            createScopedVariableReference(node.object.name, scopeManager),
+                            node.property
+                        )
+                    );
+                }
+            }
+
+            if (
+                !node.computed &&
+                node.object?.type === 'Identifier' &&
+                !scopeManager.isContextBound(node.object.name) &&
+                !scopeManager.isLoopVariable(node.object.name) &&
+                !isLexicallyDeclared(node.object.name, ancestors)
+            ) {
+                const [scopedName] = scopeManager.getVariable(node.object.name);
+                if (scopeManager.isLocalSeriesVar(node.object.name)) {
+                    const plainId = ASTFactory.createIdentifier(node.object.name);
+                    plainId._skipTransformation = true;
+                    node.object = ASTFactory.createGetCall(plainId, 0);
+                } else if (scopedName !== node.object.name) {
+                    node.object = ASTFactory.createGetCall(
+                        createScopedVariableReference(node.object.name, scopeManager),
+                        0
+                    );
+                }
+            }
+        },
+    });
+}
 
 function getPineTSFromSource(source: string | Function): string {
     if (typeof source === 'function') {
@@ -136,6 +344,10 @@ export function transpile(source: string | Function, options: { debug: boolean; 
     // Functions containing await (e.g., from request.security) must be async,
     // and their callers (via $.call) must await them.
     propagateAsyncAwait(ast);
+
+    // Final safety net for any remaining bare user-variable member access that
+    // escaped earlier walkers in nested expression positions.
+    repairResidualMemberAccess(ast, scopeManager);
 
     // Post-process: inject __maxLoops local variable at the top of the function body.
     // This caches $.__maxLoops (from Context) in a local variable so loop guards

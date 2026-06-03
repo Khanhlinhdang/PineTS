@@ -477,11 +477,14 @@ export function runTransformationPass(
             const newConsequent: any[] = [];
             node.consequent.forEach((stmt: any) => {
                 state.enterHoistingScope();
-                // stmt.parent = node; // Not strictly necessary for statements, but good for consistency
                 c(stmt, state);
                 const hoistedStmts = state.exitHoistingScope();
                 newConsequent.push(...hoistedStmts);
-                newConsequent.push(stmt);
+                if (stmt.type === 'BlockStatement') {
+                    newConsequent.push(...stmt.body);
+                } else {
+                    newConsequent.push(stmt);
+                }
             });
             node.consequent = newConsequent;
         },

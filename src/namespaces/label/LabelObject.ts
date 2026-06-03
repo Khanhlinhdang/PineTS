@@ -74,7 +74,10 @@ export class LabelObject {
     set_xloc(xloc: string): void { if (this._helper) this._helper.set_xloc(this, xloc); else if (!this._deleted) this.xloc = xloc; }
     set_yloc(yloc: string): void { if (this._helper) this._helper.set_yloc(this, yloc); else if (!this._deleted) this.yloc = yloc; }
     set_point(point: any): void { if (this._helper) this._helper.set_point(this, point); }
-    set_text_font_family(family: string): void { if (!this._deleted) this.text_font_family = family; }
+    set_text_font_family(family: string): void {
+        if (this._helper) this._helper.set_text_font_family(this, family);
+        else if (!this._deleted) this.text_font_family = family;
+    }
 
     get_x(): number { return this.x; }
     get_y(): number { return this.y; }

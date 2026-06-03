@@ -71,7 +71,10 @@ export class PineArray {
     this.reverse = (id: PineArrayObject, ...args: any[]) => id.reverse(...args);
     this.set = (id: PineArrayObject, ...args: any[]) => id.set(...args);
     this.shift = (id: PineArrayObject, ...args: any[]) => id.shift(...args);
-    this.size = (id: PineArrayObject, ...args: any[]) => id.size(...args);
+    this.size = (id: PineArrayObject | any[] | null | undefined, ...args: any[]) => {
+      if (id == null) return 0;
+      return Array.isArray(id) ? id.length : id.size(...args);
+    };
     this.slice = (id: PineArrayObject, ...args: any[]) => id.slice(...args);
     this.some = (id: PineArrayObject, ...args: any[]) => id.some(...args);
     this.sort = (id: PineArrayObject, ...args: any[]) => id.sort(...args);

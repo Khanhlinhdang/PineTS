@@ -382,6 +382,10 @@ export function transformIdentifier(node: any, scopeManager: ScopeManager): void
 }
 
 export function transformMemberExpression(memberNode: any, originalParamName: string, scopeManager: ScopeManager): void {
+    if (memberNode?._skipTransformation) {
+        return;
+    }
+
     // Skip transformation for Math object properties
     if (memberNode.object && memberNode.object.type === 'Identifier' && memberNode.object.name === 'Math') {
         return;
@@ -447,6 +451,31 @@ export function transformMemberExpression(memberNode: any, originalParamName: st
         plainId._skipTransformation = true;
         memberNode.object = ASTFactory.createGetCall(plainId, 0);
         return;
+    }
+
+    // User-defined variables holding Pine objects/UDTs are stored as Series in
+    // the runtime context. Non-computed property or method access must unwrap
+    // the current instance first:
+    //   myLine.x1        -> $.get($.var.glb1_myLine, 0).x1
+    //   obArray.get(i)   -> $.get($.var.glb1_obArray, 0).get(i)
+    // Without this, the bare identifier leaks through unchanged in some
+    // expression positions (return objects, chained property reads, method
+    // calls), causing runtime ReferenceErrors against the generated code.
+    if (
+        !memberNode.computed &&
+        memberNode.object &&
+        memberNode.object.type === 'Identifier' &&
+        !scopeManager.isContextBound(memberNode.object.name) &&
+        !scopeManager.isLoopVariable(memberNode.object.name)
+    ) {
+        const [scopedName] = scopeManager.getVariable(memberNode.object.name);
+        if (scopedName !== memberNode.object.name) {
+            memberNode.object = ASTFactory.createGetCall(
+                createScopedVariableReference(memberNode.object.name, scopeManager),
+                0
+            );
+            return;
+        }
     }
 
     //if statment variables always need to be transformed
@@ -563,6 +592,23 @@ export function transformMemberExpression(memberNode: any, originalParamName: st
             Object.assign(memberNode, inner);
             delete memberNode.computed;
             return;
+        }
+    }
+
+    // Optional property access for values read through $.get(...).
+    // Pine allows field access on `na` UDT/object values and propagates na
+    // instead of crashing. In JS, `$.get(X, 0).field` throws when the current
+    // value is undefined/null, so mark the access as optional:
+    //   $.get(top, 0).y        -> $.get(top, 0)?.y
+    //   $.get(arr, 0).obj.y    -> $.get(arr, 0).obj?.y
+    //
+    // Method-call optional chaining is handled separately in
+    // transformCallExpression; this covers plain property reads only.
+    if (!memberNode.computed) {
+        const isDirect = isDirectGetCall(memberNode.object);
+        const isChained = memberNode.object?.type === 'MemberExpression' && hasGetCallInChain(memberNode.object);
+        if ((isDirect || isChained) && !(memberNode.parent?.type === 'AssignmentExpression' && memberNode.parent.left === memberNode)) {
+            memberNode.optional = true;
         }
     }
 }

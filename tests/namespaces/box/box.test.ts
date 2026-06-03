@@ -269,6 +269,28 @@ describe('BOX Namespace', () => {
         expect(result.formatting[0]).toBe('format_bold');
     });
 
+    it('box setters update plot snapshot and box.new accepts text_formatting', async () => {
+        const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', null, new Date('2025-01-01').getTime(), new Date('2025-11-20').getTime());
+
+        const { result, plots } = await pineTS.run((context) => {
+            var b = box.new(0, 60000, 10, 50000, { text: 'Box', text_formatting: 'format_bold' });
+            box.set_text_halign(b, 'left');
+            box.set_text_valign(b, 'top');
+            return {
+                halign: b.text_halign,
+                valign: b.text_valign,
+                formatting: b.text_formatting,
+            };
+        });
+
+        expect(result.halign[0]).toBe('left');
+        expect(result.valign[0]).toBe('top');
+        expect(result.formatting[0]).toBe('format_bold');
+        expect(plots['__boxes__'].data[0].value[0].text_halign).toBe('left');
+        expect(plots['__boxes__'].data[0].value[0].text_valign).toBe('top');
+        expect(plots['__boxes__'].data[0].value[0].text_formatting).toBe('format_bold');
+    });
+
     it('box.copy() creates independent copy', async () => {
         const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', null, new Date('2025-01-01').getTime(), new Date('2025-11-20').getTime());
 

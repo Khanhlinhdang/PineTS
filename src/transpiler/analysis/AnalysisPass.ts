@@ -554,6 +554,7 @@ export function runAnalysisPass(ast: any, scopeManager: ScopeManager): string | 
                                         value: index,
                                     },
                                     computed: true,
+                                    _skipTransformation: true,
                                 },
                             },
                         ],

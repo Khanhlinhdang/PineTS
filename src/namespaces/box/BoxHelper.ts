@@ -9,8 +9,8 @@ import { silentInSecondary } from '../silentInSecondary';
 
 //prettier-ignore
 const BOX_NEW_SIGNATURES = [
-    ['left', 'top', 'right', 'bottom', 'border_color', 'border_width', 'border_style', 'extend', 'xloc', 'bgcolor', 'text', 'text_size', 'text_color', 'text_halign', 'text_valign', 'text_wrap', 'text_font_family', 'force_overlay'],
-    ['top_left', 'bottom_right', 'border_color', 'border_width', 'border_style', 'extend', 'xloc', 'bgcolor', 'text', 'text_size', 'text_color', 'text_halign', 'text_valign', 'text_wrap', 'text_font_family', 'force_overlay'],
+    ['left', 'top', 'right', 'bottom', 'border_color', 'border_width', 'border_style', 'extend', 'xloc', 'bgcolor', 'text', 'text_size', 'text_color', 'text_halign', 'text_valign', 'text_wrap', 'text_font_family', 'text_formatting', 'force_overlay'],
+    ['top_left', 'bottom_right', 'border_color', 'border_width', 'border_style', 'extend', 'xloc', 'bgcolor', 'text', 'text_size', 'text_color', 'text_halign', 'text_valign', 'text_wrap', 'text_font_family', 'text_formatting', 'force_overlay'],
 ];
 
 //prettier-ignore
@@ -21,7 +21,7 @@ const BOX_NEW_ARGS_TYPES: Record<string, string> = {
     extend: 'string', xloc: 'string', bgcolor: 'color',
     text: 'string', text_size: 'string', text_color: 'color',
     text_halign: 'string', text_valign: 'string', text_wrap: 'string',
-    text_font_family: 'string', force_overlay: 'boolean',
+    text_font_family: 'string', text_formatting: 'string', force_overlay: 'boolean',
 };
 
 export class BoxHelper {
@@ -207,7 +207,7 @@ export class BoxHelper {
             parsed.border_width, parsed.bgcolor,
             parsed.text, parsed.text_color, parsed.text_size,
             parsed.text_halign, parsed.text_valign, parsed.text_wrap,
-            parsed.text_font_family, undefined,
+            parsed.text_font_family, parsed.text_formatting,
             parsed.force_overlay,
         );
     }
@@ -238,22 +238,34 @@ export class BoxHelper {
 
     @silentInSecondary
     set_left(id: BoxObject, left: number): void {
-        if (id && !id._deleted) id.left = this._resolve(left);
+        if (id && !id._deleted) {
+            id.left = this._resolve(left);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_right(id: BoxObject, right: number): void {
-        if (id && !id._deleted) id.right = this._resolve(right);
+        if (id && !id._deleted) {
+            id.right = this._resolve(right);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_top(id: BoxObject, top: number): void {
-        if (id && !id._deleted) id.top = this._resolve(top);
+        if (id && !id._deleted) {
+            id.top = this._resolve(top);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_bottom(id: BoxObject, bottom: number): void {
-        if (id && !id._deleted) id.bottom = this._resolve(bottom);
+        if (id && !id._deleted) {
+            id.bottom = this._resolve(bottom);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
@@ -261,6 +273,7 @@ export class BoxHelper {
         if (id && !id._deleted) {
             id.left = this._resolve(left);
             id.top = this._resolve(top);
+            this.syncToPlot();
         }
     }
 
@@ -269,6 +282,7 @@ export class BoxHelper {
         if (id && !id._deleted) {
             id.right = this._resolve(right);
             id.bottom = this._resolve(bottom);
+            this.syncToPlot();
         }
     }
 
@@ -279,6 +293,7 @@ export class BoxHelper {
             id.left = r.x;
             id.top = point.price;
             id.xloc = r.xloc;
+            this.syncToPlot();
         }
     }
 
@@ -289,6 +304,7 @@ export class BoxHelper {
             id.right = r.x;
             id.bottom = point.price;
             id.xloc = r.xloc;
+            this.syncToPlot();
         }
     }
 
@@ -298,6 +314,7 @@ export class BoxHelper {
             id.left = this._resolve(left);
             id.right = this._resolve(right);
             id.xloc = this._resolve(xloc);
+            this.syncToPlot();
         }
     }
 
@@ -305,69 +322,108 @@ export class BoxHelper {
 
     @silentInSecondary
     set_bgcolor(id: BoxObject, color: string): void {
-        if (id && !id._deleted) id.bgcolor = this._resolve(color);
+        if (id && !id._deleted) {
+            id.bgcolor = this._resolve(color);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_border_color(id: BoxObject, color: string): void {
-        if (id && !id._deleted) id.border_color = this._resolve(color);
+        if (id && !id._deleted) {
+            id.border_color = this._resolve(color);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_border_width(id: BoxObject, width: number): void {
-        if (id && !id._deleted) id.border_width = this._resolve(width) ?? 1;
+        if (id && !id._deleted) {
+            id.border_width = this._resolve(width) ?? 1;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_border_style(id: BoxObject, style: string): void {
-        if (id && !id._deleted) id.border_style = this._resolve(style);
+        if (id && !id._deleted) {
+            id.border_style = this._resolve(style);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_extend(id: BoxObject, extend: string): void {
-        if (id && !id._deleted) id.extend = this._resolve(extend);
+        if (id && !id._deleted) {
+            id.extend = this._resolve(extend);
+            this.syncToPlot();
+        }
     }
 
     // --- Text setters ---
 
     @silentInSecondary
     set_text(id: BoxObject, text: string): void {
-        if (id && !id._deleted) id.text = this._resolve(text) || '';
+        if (id && !id._deleted) {
+            id.text = this._resolve(text) || '';
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_text_color(id: BoxObject, color: string): void {
-        if (id && !id._deleted) id.text_color = this._resolve(color);
+        if (id && !id._deleted) {
+            id.text_color = this._resolve(color);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_text_size(id: BoxObject, size: string): void {
-        if (id && !id._deleted) id.text_size = this._resolve(size);
+        if (id && !id._deleted) {
+            id.text_size = this._resolve(size);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_text_halign(id: BoxObject, align: string): void {
-        if (id && !id._deleted) id.text_halign = this._resolve(align);
+        if (id && !id._deleted) {
+            id.text_halign = this._resolve(align);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_text_valign(id: BoxObject, align: string): void {
-        if (id && !id._deleted) id.text_valign = this._resolve(align);
+        if (id && !id._deleted) {
+            id.text_valign = this._resolve(align);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_text_wrap(id: BoxObject, wrap: string): void {
-        if (id && !id._deleted) id.text_wrap = this._resolve(wrap);
+        if (id && !id._deleted) {
+            id.text_wrap = this._resolve(wrap);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_text_font_family(id: BoxObject, family: string): void {
-        if (id && !id._deleted) id.text_font_family = this._resolve(family);
+        if (id && !id._deleted) {
+            id.text_font_family = this._resolve(family);
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_text_formatting(id: BoxObject, formatting: string): void {
-        if (id && !id._deleted) id.text_formatting = this._resolve(formatting);
+        if (id && !id._deleted) {
+            id.text_formatting = this._resolve(formatting);
+            this.syncToPlot();
+        }
     }
 
     // --- Getters ---

@@ -527,7 +527,11 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
                                     c(stmt, { parent: node });
                                     const hoistedStmts = scopeManager.exitHoistingScope();
                                     newConsequent.push(...hoistedStmts);
-                                    newConsequent.push(stmt);
+                                    if (stmt.type === 'BlockStatement') {
+                                        newConsequent.push(...stmt.body);
+                                    } else {
+                                        newConsequent.push(stmt);
+                                    }
                                 });
                                 node.consequent = newConsequent;
                             }
@@ -647,7 +651,14 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
             // 2. Then access the array element [index]
 
             const tempVarName = decl.init.object.name;
-            const tempVarRef = createScopedVariableReference(tempVarName, scopeManager);
+            const [scopedTempVarName] = scopeManager.getVariable(tempVarName);
+            const tempVarRef =
+                scopedTempVarName !== tempVarName || scopeManager.isContextBound(tempVarName)
+                    ? createScopedVariableReference(tempVarName, scopeManager)
+                    : ASTFactory.createIdentifier(tempVarName);
+            if (tempVarRef.type === 'Identifier') {
+                tempVarRef._skipTransformation = true;
+            }
             const arrayIndex = decl.init.property.value;
 
             // Create $.get(tempVar, 0)[index]
@@ -720,7 +731,11 @@ export function transformVariableDeclaration(varNode: any, scopeManager: ScopeMa
                         c(stmt, state);
                         const hoistedStmts = state.exitHoistingScope();
                         newConsequent.push(...hoistedStmts);
-                        newConsequent.push(stmt);
+                        if (stmt.type === 'BlockStatement') {
+                            newConsequent.push(...stmt.body);
+                        } else {
+                            newConsequent.push(stmt);
+                        }
                     });
                     node.consequent = newConsequent;
                 },
@@ -1166,8 +1181,12 @@ export function transformReturnStatement(node: any, scopeManager: ScopeManager):
                                 node._arrayAccessed = true;
                             }
                         },
-                        MemberExpression(node: any) {
+                        MemberExpression(node: any, state: ScopeManager, c: any) {
                             transformMemberExpression(node, '', scopeManager);
+                            if (node.type === 'MemberExpression' && node.object) {
+                                node.object.parent = node;
+                                c(node.object, state);
+                            }
                         },
                         CallExpression(node: any, state: ScopeManager, c: any) {
                             if (node.callee.type === 'ArrowFunctionExpression' || node.callee.type === 'FunctionExpression') {
@@ -1228,6 +1247,52 @@ export function transformReturnStatement(node: any, scopeManager: ScopeManager):
                         // It's a user variable - transform to context reference
                         prop.value = createScopedVariableReference(prop.value.name, scopeManager);
                     }
+                } else if (
+                    prop.value &&
+                    (
+                        prop.value.type === 'MemberExpression' ||
+                        prop.value.type === 'CallExpression' ||
+                        prop.value.type === 'BinaryExpression' ||
+                        prop.value.type === 'LogicalExpression' ||
+                        prop.value.type === 'ConditionalExpression' ||
+                        prop.value.type === 'UnaryExpression' ||
+                        prop.value.type === 'AssignmentExpression'
+                    )
+                ) {
+                    // Regular object properties like `{ x: obj.field }` in a return
+                    // statement need the same recursive expression rewrite as array
+                    // return elements. Without it, user vars leak bare identifiers
+                    // (e.g. `b.text_halign` stays `b.text_halign` instead of
+                    // `$.var.glb1_b.text_halign`), causing runtime ReferenceErrors.
+                    walk.recursive(prop.value, scopeManager, {
+                        Identifier(node: any, state: ScopeManager) {
+                            transformIdentifier(node, state);
+                            if (node.type === 'Identifier' && !node._arrayAccessed) {
+                                addArrayAccess(node, state);
+                                node._arrayAccessed = true;
+                            }
+                        },
+                        MemberExpression(node: any, state: ScopeManager, c: any) {
+                            transformMemberExpression(node, '', scopeManager);
+                            if (node.type === 'MemberExpression' && node.object) {
+                                node.object.parent = node;
+                                c(node.object, state);
+                            }
+                        },
+                        CallExpression(node: any, state: ScopeManager, c: any) {
+                            if (node.callee.type === 'ArrowFunctionExpression' || node.callee.type === 'FunctionExpression') {
+                                c(node.callee, state);
+                            }
+                            transformCallExpression(node, state);
+                            if (node.type === 'CallExpression') {
+                                node.arguments.forEach((arg: any) => c(arg, state));
+                            }
+                        },
+                        BinaryExpression(node: any, state: any, c: any) {
+                            c(node.left, state);
+                            c(node.right, state);
+                        },
+                    });
                 }
 
                 return prop;
@@ -1307,9 +1372,13 @@ export function transformReturnStatement(node: any, scopeManager: ScopeManager):
                             node._arrayAccessed = true;
                         }
                     },
-                    MemberExpression(node: any) {
-                        transformMemberExpression(node, '', scopeManager);
-                    },
+                        MemberExpression(node: any, state: ScopeManager, c: any) {
+                            transformMemberExpression(node, '', scopeManager);
+                            if (node.type === 'MemberExpression' && node.object) {
+                                node.object.parent = node;
+                                c(node.object, state);
+                            }
+                        },
                     // When an arrow function's last statement is an assignment
                     // (e.g. `tracker.field := …`), the parser folds it into the
                     // implicit return as an AssignmentExpression. Without this
@@ -1385,7 +1454,11 @@ export function transformReturnStatement(node: any, scopeManager: ScopeManager):
                             c(stmt, state);
                             const hoistedStmts = scopeManager.exitHoistingScope();
                             newConsequent.push(...hoistedStmts);
-                            newConsequent.push(stmt);
+                            if (stmt.type === 'BlockStatement') {
+                                newConsequent.push(...stmt.body);
+                            } else {
+                                newConsequent.push(stmt);
+                            }
                         });
                         node.consequent = newConsequent;
                     },

@@ -139,6 +139,25 @@ describe('LABEL Namespace', () => {
         expect(result.lbl_tooltip[0]).toBe('New tooltip');
     });
 
+    it('label.set_text_font_family() updates helper output and plot snapshot', async () => {
+        const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', null, new Date('2025-01-01').getTime(), new Date('2025-11-20').getTime());
+
+        const { result, plots } = await pineTS.run((context) => {
+            var myLabel = label.new(bar_index, close, 'Font');
+            label.set_style(myLabel, label.style_circle);
+            label.set_text_font_family(myLabel, 'monospace');
+            return {
+                lbl_style: myLabel.style,
+                lbl_font: myLabel.text_font_family,
+            };
+        });
+
+        expect(result.lbl_style[0]).toBe('style_circle');
+        expect(result.lbl_font[0]).toBe('monospace');
+        expect(plots['__labels__'].data[0].value[0].style).toBe('style_circle');
+        expect(plots['__labels__'].data[0].value[0].text_font_family).toBe('monospace');
+    });
+
     it('label.get_text(), get_x(), get_y() return correct values', async () => {
         const pineTS = new PineTS(Provider.Mock, 'BTCUSDC', 'D', null, new Date('2025-01-01').getTime(), new Date('2025-11-20').getTime());
 

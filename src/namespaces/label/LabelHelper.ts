@@ -213,12 +213,18 @@ export class LabelHelper {
 
     @silentInSecondary
     set_x(id: LabelObject, x: number): void {
-        if (id && !id._deleted) id.x = x;
+        if (id && !id._deleted) {
+            id.x = x;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_y(id: LabelObject, y: number): void {
-        if (id && !id._deleted) id.y = y;
+        if (id && !id._deleted) {
+            id.y = y;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
@@ -226,52 +232,88 @@ export class LabelHelper {
         if (id && !id._deleted) {
             id.x = x;
             id.y = y;
+            this.syncToPlot();
         }
     }
 
     @silentInSecondary
     set_text(id: LabelObject, text: string): void {
-        if (id && !id._deleted) id.text = text;
+        if (id && !id._deleted) {
+            id.text = text;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_color(id: LabelObject, color: string): void {
-        if (id && !id._deleted) id.color = color;
+        if (id && !id._deleted) {
+            id.color = color;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_textcolor(id: LabelObject, textcolor: string): void {
-        if (id && !id._deleted) id.textcolor = textcolor;
+        if (id && !id._deleted) {
+            id.textcolor = textcolor;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_size(id: LabelObject, size: string): void {
-        if (id && !id._deleted) id.size = size;
+        if (id && !id._deleted) {
+            id.size = size;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_style(id: LabelObject, style: string): void {
-        if (id && !id._deleted) id.style = style;
+        if (id && !id._deleted) {
+            id.style = style;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_textalign(id: LabelObject, textalign: string): void {
-        if (id && !id._deleted) id.textalign = textalign;
+        if (id && !id._deleted) {
+            id.textalign = textalign;
+            this.syncToPlot();
+        }
+    }
+
+    @silentInSecondary
+    set_text_font_family(id: LabelObject, family: string): void {
+        if (id && !id._deleted) {
+            id.text_font_family = this._resolve(family) || 'default';
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_tooltip(id: LabelObject, tooltip: string): void {
-        if (id && !id._deleted) id.tooltip = tooltip;
+        if (id && !id._deleted) {
+            id.tooltip = tooltip;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_xloc(id: LabelObject, xloc: string): void {
-        if (id && !id._deleted) id.xloc = xloc;
+        if (id && !id._deleted) {
+            id.xloc = xloc;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
     set_yloc(id: LabelObject, yloc: string): void {
-        if (id && !id._deleted) id.yloc = yloc;
+        if (id && !id._deleted) {
+            id.yloc = yloc;
+            this.syncToPlot();
+        }
     }
 
     @silentInSecondary
@@ -295,6 +337,7 @@ export class LabelHelper {
                 id.xloc = 'bt';
             }
             id.y = point.price;
+            this.syncToPlot();
         }
     }
 

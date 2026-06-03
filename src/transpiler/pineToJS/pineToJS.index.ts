@@ -33,6 +33,12 @@ export function extractPineScriptVersion(sourceCode: string): number | null {
 }
 
 export function pineToJS(sourceCode: string, options: any = {}) {
+    // Community Pine scripts often contain pasted Unicode spacing characters
+    // (NBSP, narrow NBSP, figure spaces, etc.) that are visually identical to
+    // regular spaces but break the lexer. Normalize them up front without
+    // touching line structure.
+    sourceCode = sourceCode.replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
+
     // Step 0: Detect Pine Script version
     const version = extractPineScriptVersion(sourceCode);
     if (version === null) {

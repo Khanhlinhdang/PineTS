@@ -341,6 +341,7 @@ export class Context {
                 'set_size',
                 'set_style',
                 'set_textalign',
+                'set_text_font_family',
                 'set_tooltip',
                 'set_point',
                 'set_xloc',
