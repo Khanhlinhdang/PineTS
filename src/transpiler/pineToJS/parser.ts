@@ -1671,6 +1671,13 @@ export class Parser {
             }
             // Index/history operator
             else if (this.match(TokenType.LBRACKET)) {
+                const prevToken = this.tokens[this.pos - 1];
+                // A leading `[` after a physical line break / block close starts a
+                // new statement or array literal (e.g. implicit `return [a, b]`),
+                // not a postfix history/index operator on the previous expression.
+                if (prevToken && (prevToken.type === TokenType.NEWLINE || prevToken.type === TokenType.DEDENT)) {
+                    break;
+                }
                 // If this looks like tuple destructuring [a, b, c] = ..., it's a new
                 // statement, not a postfix index on the previous expression.
                 // This happens after block expressions like switch where DEDENT is

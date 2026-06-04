@@ -31,6 +31,55 @@ import { TableHelper } from './namespaces/table/TableHelper';
 import { Ticker } from './namespaces/Ticker';
 import type { IndicatorOptions } from './types/PineTypes';
 
+function buildZigzagShim() {
+    return {
+        Settings: {
+            new(...args: any[]) {
+                return {
+                    devThreshold: args[0],
+                    depth: args[1],
+                    lineColor: args[2],
+                    draw: args[3],
+                    extend: args[4],
+                    showPrice: args[5],
+                    showVolume: args[6],
+                    mode: args[7],
+                    enabled: args[8],
+                };
+            },
+        },
+        newInstance(settings: any) {
+            return {
+                settings,
+                update() {
+                    return false;
+                },
+                lastPivot() {
+                    return null;
+                },
+            };
+        },
+    };
+}
+
+function buildTrLibShim() {
+    return {
+        calcPvsra(...args: any[]) {
+            const regularCandleUpColor = args[10] ?? null;
+            return [[regularCandleUpColor, false, 0, 0, 0]];
+        },
+        getPvsraFlagByColor() {
+            return 0;
+        },
+        updateZones() {
+            return undefined;
+        },
+        cleanarr() {
+            return undefined;
+        },
+    };
+}
+
 export class Context {
     public data: any = {
         open: new Series([]),
@@ -134,6 +183,10 @@ export class Context {
     public pineTSCode: Function | String;
 
     public inputs: Record<string, any> = {};
+    public imports: Record<string, any> = {
+        zigzag: buildZigzagShim(),
+        trLib: buildTrLibShim(),
+    };
 
     constructor({
         marketData,

@@ -86,6 +86,20 @@ describe('Transpiler - Await Injection', () => {
             expect(transpiledCode).toMatch(/const temp_\d+ = await request\.security_lower_tf\(/);
             expect(transpiledCode).not.toMatch(/await temp_\d+\)/);
         });
+
+        it('should inject await for ta.requestVolumeDelta', () => {
+            const code = `async (context) => {
+                const { ta } = context.pine;
+                const delta = ta.requestVolumeDelta('60', 'D');
+                return { delta };
+            }`;
+
+            const transpiled = transpile.bind(context)(code);
+            const transpiledCode = transpiled.toString();
+
+            expect(transpiledCode).toMatch(/const temp_\d+ = await ta\.requestVolumeDelta\(/);
+            expect(transpiledCode).not.toMatch(/await temp_\d+\)/);
+        });
     });
 
     describe('Non-async methods', () => {
@@ -143,4 +157,3 @@ describe('Transpiler - Await Injection', () => {
         });
     });
 });
-

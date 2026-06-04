@@ -150,10 +150,15 @@ export class Lexer {
             }
         }
 
-        // Check if this is a blank line (only whitespace followed by newline or EOF)
-        // If so, skip indentation processing and keep position at whitespace
-        if (this.peek() === '\n' || this.peek() === '\r' || this.peek() === '\0') {
-            // Don't process indentation for blank lines
+        // Check if this is a blank or comment-only line.
+        // Indentation before `// comment` should not create a real block.
+        if (
+            this.peek() === '\n' ||
+            this.peek() === '\r' ||
+            this.peek() === '\0' ||
+            (this.peek() === '/' && this.peek(1) === '/')
+        ) {
+            // Don't process indentation for blank/comment-only lines
             // The whitespace will be skipped in the main loop
             return;
         }

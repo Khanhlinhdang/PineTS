@@ -33,7 +33,7 @@ export const NAMESPACES_LIKE = [
 ];
 
 // Async methods that require await keyword (format: 'namespace.method')
-export const ASYNC_METHODS = ['request.security', 'request.security_lower_tf'];
+export const ASYNC_METHODS = ['request.security', 'request.security_lower_tf', 'ta.requestVolumeDelta'];
 
 // Host-bound Pine built-ins whose values come from the UI/host environment (viewport,
 // theme, chart-type) rather than from market data. PineTS provides sensible defaults
@@ -201,6 +201,7 @@ export const CONTEXT_PINE_VARS = [
     'bar_index',
     'last_bar_index',
     'last_bar_time',
+    'timenow',
     'inputs',
     'time',
     'time_close',

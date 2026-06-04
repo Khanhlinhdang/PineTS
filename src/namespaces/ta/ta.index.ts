@@ -43,11 +43,13 @@ import { param } from './methods/param';
 import { percentile_linear_interpolation } from './methods/percentile_linear_interpolation';
 import { percentile_nearest_rank } from './methods/percentile_nearest_rank';
 import { percentrank } from './methods/percentrank';
+import { pivot_point_levels } from './methods/pivot_point_levels';
 import { pivothigh } from './methods/pivothigh';
 import { pivotlow } from './methods/pivotlow';
 import { pvi } from './methods/pvi';
 import { pvt } from './methods/pvt';
 import { range } from './methods/range';
+import { requestVolumeDelta } from './methods/requestVolumeDelta';
 import { rising } from './methods/rising';
 import { rma } from './methods/rma';
 import { roc } from './methods/roc';
@@ -113,11 +115,13 @@ const methods = {
   percentile_linear_interpolation,
   percentile_nearest_rank,
   percentrank,
+  pivot_point_levels,
   pivothigh,
   pivotlow,
   pvi,
   pvt,
   range,
+  requestVolumeDelta,
   rising,
   rma,
   roc,
@@ -182,11 +186,13 @@ export class TechnicalAnalysis {
   percentile_linear_interpolation: ReturnType<typeof methods.percentile_linear_interpolation>;
   percentile_nearest_rank: ReturnType<typeof methods.percentile_nearest_rank>;
   percentrank: ReturnType<typeof methods.percentrank>;
+  pivot_point_levels: ReturnType<typeof methods.pivot_point_levels>;
   pivothigh: ReturnType<typeof methods.pivothigh>;
   pivotlow: ReturnType<typeof methods.pivotlow>;
   pvi: ReturnType<typeof methods.pvi>;
   pvt: ReturnType<typeof methods.pvt>;
   range: ReturnType<typeof methods.range>;
+  requestVolumeDelta: ReturnType<typeof methods.requestVolumeDelta>;
   rising: ReturnType<typeof methods.rising>;
   rma: ReturnType<typeof methods.rma>;
   roc: ReturnType<typeof methods.roc>;

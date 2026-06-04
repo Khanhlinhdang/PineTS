@@ -91,6 +91,21 @@ function addPatternIdentifiers(pattern: any, names: Set<string>): void {
     }
 }
 
+type SupportedImportAlias = 'zigzag' | 'trLib';
+
+function collectSupportedImportAliases(source: string | Function): SupportedImportAlias[] {
+    if (typeof source !== 'string') return [];
+
+    const aliases: SupportedImportAlias[] = [];
+    if (/^\s*import\s+TradingView\/ZigZag\/7\s+as\s+zigzag\s*$/m.test(source)) {
+        aliases.push('zigzag');
+    }
+    if (/^\s*import\s+TradersReality\/Traders_Reality_Lib\/1\s+as\s+trLib\s*$/m.test(source)) {
+        aliases.push('trLib');
+    }
+    return aliases;
+}
+
 function isScopeNode(node: any): boolean {
     return !!node && (
         node.type === 'Program' ||
@@ -295,6 +310,7 @@ export function transpile(source: string | Function, options: { debug: boolean; 
     }
 
     const { debug } = options;
+    const supportedImportAliases = collectSupportedImportAliases(source);
 
     let code = getPineTSFromSource(source);
 
@@ -356,6 +372,28 @@ export function transpile(source: string | Function, options: { debug: boolean; 
         const firstStmt = ast.body[0] as any;
         const fn = firstStmt?.expression || firstStmt;
         if (fn.body?.type === 'BlockStatement') {
+            if (supportedImportAliases.length > 0) {
+                fn.body.body.unshift({
+                    type: 'VariableDeclaration',
+                    kind: 'const',
+                    declarations: supportedImportAliases.map((alias) => ({
+                        type: 'VariableDeclarator',
+                        id: { type: 'Identifier', name: alias },
+                        init: {
+                            type: 'MemberExpression',
+                            object: {
+                                type: 'MemberExpression',
+                                object: { type: 'Identifier', name: '$' },
+                                property: { type: 'Identifier', name: 'imports' },
+                                computed: false,
+                            },
+                            property: { type: 'Identifier', name: alias },
+                            computed: false,
+                        },
+                    })),
+                });
+            }
+
             fn.body.body.unshift({
                 type: 'VariableDeclaration',
                 kind: 'const',
